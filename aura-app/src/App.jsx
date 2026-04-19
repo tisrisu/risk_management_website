@@ -1,12 +1,15 @@
+import { Suspense, lazy } from 'react';
 import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom';
 import { AuthProvider, useAuth } from './context/AuthContext';
-import WelcomePage from './pages/WelcomePage';
-import GuestLogin from './pages/GuestLogin';
-import StaffLogin from './pages/StaffLogin';
-import HotelRegistration from './pages/HotelRegistration';
-import GuestPage from './pages/GuestPage';
-import StaffPage from './pages/StaffPage';
+import AmbientBackground from './components/AmbientBackground';
 import './index.css';
+
+const WelcomePage = lazy(() => import('./pages/WelcomePage'));
+const GuestLogin = lazy(() => import('./pages/GuestLogin'));
+const StaffLogin = lazy(() => import('./pages/StaffLogin'));
+const HotelRegistration = lazy(() => import('./pages/HotelRegistration'));
+const GuestPage = lazy(() => import('./pages/GuestPage'));
+const StaffPage = lazy(() => import('./pages/StaffPage'));
 
 // A tiny wrapper component to protect routes
 function ProtectedRoute({ children, role }) {
@@ -30,32 +33,37 @@ function ProtectedRoute({ children, role }) {
 function App() {
   return (
     <AuthProvider>
+      <AmbientBackground />
       <BrowserRouter>
-        <Routes>
-          {/* Public Welcome & Login */}
-          <Route path="/" element={<WelcomePage />} />
-          <Route path="/register" element={<HotelRegistration />} />
-          <Route path="/guest/login" element={<GuestLogin />} />
-          <Route path="/staff/login" element={<StaffLogin />} />
+        <Suspense fallback={<div style={{ display: 'flex', height: '100vh', justifyContent: 'center', alignItems: 'center', color: 'var(--text-primary)' }}>Loading...</div>}>
+          <main style={{ minHeight: '100vh' }}>
+            <Routes>
+              {/* Public Welcome & Login */}
+              <Route path="/" element={<WelcomePage />} />
+              <Route path="/register" element={<HotelRegistration />} />
+              <Route path="/guest/login" element={<GuestLogin />} />
+              <Route path="/staff/login" element={<StaffLogin />} />
 
-          {/* Protected Routes */}
-          <Route 
-            path="/guest" 
-            element={
-              <ProtectedRoute role="guest">
-                <GuestPage />
-              </ProtectedRoute>
-            } 
-          />
-          <Route 
-            path="/staff" 
-            element={
-              <ProtectedRoute role="staff">
-                <StaffPage />
-              </ProtectedRoute>
-            } 
-          />
-        </Routes>
+              {/* Protected Routes */}
+              <Route 
+                path="/guest" 
+                element={
+                  <ProtectedRoute role="guest">
+                    <GuestPage />
+                  </ProtectedRoute>
+                } 
+              />
+              <Route 
+                path="/staff" 
+                element={
+                  <ProtectedRoute role="staff">
+                    <StaffPage />
+                  </ProtectedRoute>
+                } 
+              />
+            </Routes>
+          </main>
+        </Suspense>
       </BrowserRouter>
     </AuthProvider>
   );

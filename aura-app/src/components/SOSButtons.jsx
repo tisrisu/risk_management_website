@@ -3,39 +3,43 @@ import { useState, useRef, useEffect } from 'react';
 const EMERGENCY_TYPES = [
   {
     type: 'FIRE',
-    emoji: '🔥',
+    letter: 'F',
     label: 'FIRE',
     sub: 'Smoke, flames, burning smell',
-    color: 'var(--critical)',
-    bg: 'var(--critical-bg)',
-    glow: 'var(--critical-glow)',
+    color: 'var(--red)',
+    colorRaw: '#FF4757',
+    bg: 'var(--red-bg)',
+    glow: 'var(--red-glow)',
   },
   {
     type: 'MEDICAL',
-    emoji: '⚡',
+    letter: 'M',
     label: 'MEDICAL',
     sub: 'Injury, illness, unconscious',
-    color: 'var(--warning)',
-    bg: 'var(--warning-bg)',
-    glow: 'rgba(245,158,11,0.15)',
+    color: 'var(--amber)',
+    colorRaw: '#FFA502',
+    bg: 'var(--amber-bg)',
+    glow: 'var(--amber-glow)',
   },
   {
     type: 'SECURITY',
-    emoji: '👮',
+    letter: 'S',
     label: 'SECURITY',
     sub: 'Intruder, threat, suspicious',
-    color: 'var(--info)',
-    bg: '#08101a',
-    glow: 'rgba(59,130,246,0.15)',
+    color: 'var(--blue)',
+    colorRaw: '#1E90FF',
+    bg: 'var(--blue-bg)',
+    glow: 'var(--blue-glow)',
   },
   {
     type: 'OTHER',
-    emoji: '⚠',
-    label: 'OTHER HELP',
+    letter: '?',
+    label: 'OTHER',
     sub: 'Any other urgent situation',
-    color: 'var(--text-secondary)',
-    bg: 'var(--bg-elevated)',
-    glow: 'rgba(100,100,100,0.1)',
+    color: 'var(--purple)',
+    colorRaw: '#A78BFA',
+    bg: 'var(--purple-bg)',
+    glow: 'var(--purple-glow)',
   },
 ];
 
@@ -43,12 +47,16 @@ function SOSButtons({ onSOS, loading }) {
   const [selected, setSelected] = useState(null);
   const [message, setMessage] = useState('');
   const [isListening, setIsListening] = useState(false);
+  const [hoveredIdx, setHoveredIdx] = useState(null);
+  const [pressedIdx, setPressedIdx] = useState(null);
+  const [isSupported, setIsSupported] = useState(false);
   const recognitionRef = useRef(null);
   const originalMessageRef = useRef('');
 
   useEffect(() => {
     const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
     if (SpeechRecognition) {
+      setIsSupported(true);
       const recognition = new SpeechRecognition();
       recognition.continuous = true;
       recognition.interimResults = true;
@@ -86,7 +94,6 @@ function SOSButtons({ onSOS, loading }) {
         recognitionRef.current?.stop();
         setIsListening(false);
       } else {
-        // Save the current message before overwriting to append speech later
         originalMessageRef.current = message ? message + ' ' : '';
         recognitionRef.current?.start();
         setIsListening(true);
@@ -117,55 +124,82 @@ function SOSButtons({ onSOS, loading }) {
 
       {/* 2x2 button grid */}
       <div style={styles.grid}>
-        {EMERGENCY_TYPES.map((item, i) => (
-          <button
-            key={item.type}
-            onClick={() => handleSelect(item)}
-            style={{
-              ...styles.btn,
-              borderColor: selected?.type === item.type ? item.color : 'var(--border-default)',
-              background: selected?.type === item.type ? item.bg : 'var(--bg-surface)',
-              boxShadow: selected?.type === item.type ? `0 0 20px ${item.glow}` : 'none',
-              animation: selected?.type === item.type ? 'pulse-ring 2s infinite' : 'none',
-              animationDelay: `${i * 0.1}s`,
-            }}
-          >
-            <span style={{ fontSize: '1.8rem', lineHeight: 1 }}>{item.emoji}</span>
-            <span style={{ ...styles.btnLabel, color: selected?.type === item.type ? item.color : 'var(--text-primary)' }}>
-              {item.label}
-            </span>
-            <span style={styles.btnSub}>{item.sub}</span>
-          </button>
-        ))}
+        {EMERGENCY_TYPES.map((item, i) => {
+          const isSelected = selected?.type === item.type;
+          const isHovered = hoveredIdx === i;
+          const isPressed = pressedIdx === i;
+
+          return (
+            <button
+              key={item.type}
+              onClick={() => handleSelect(item)}
+              onMouseEnter={() => setHoveredIdx(i)}
+              onMouseLeave={() => { setHoveredIdx(null); setPressedIdx(null); }}
+              onMouseDown={() => setPressedIdx(i)}
+              onMouseUp={() => setPressedIdx(null)}
+              style={{
+                ...styles.btn,
+                borderColor: isSelected ? item.color : isHovered ? item.color : 'var(--border-mid)',
+                background: isSelected ? item.bg : isHovered ? item.bg : 'var(--bg-elevated)',
+                boxShadow: isSelected ? `0 0 20px ${item.glow}` : 'none',
+                transform: isPressed ? 'scale(0.97) translateY(0)' : isHovered ? 'translateY(-2px)' : 'translateY(0)',
+              }}
+            >
+              {/* Icon box */}
+              <span style={{
+                ...styles.iconBox,
+                background: `${item.colorRaw}15`,
+                borderColor: item.color,
+                color: item.color,
+              }}>
+                <span className="mono" style={{ fontSize: '14px', fontWeight: 'bold' }}>{item.letter}</span>
+              </span>
+              {/* Label */}
+              <span style={{
+                ...styles.btnLabel,
+                color: isSelected ? item.color : 'var(--text-primary)',
+              }}>
+                {item.label}
+              </span>
+              {/* Sub */}
+              <span style={styles.btnSub}>{item.sub}</span>
+            </button>
+          );
+        })}
       </div>
 
       {/* Detail box — slides in after selection */}
       {selected && (
-        <div style={{...styles.detailBox, borderColor: selected.color, animation: 'fadeUp 0.3s ease'}}>
-          <p style={{...styles.detailLabel, color: selected.color}} className="mono">
-            {selected.label} SELECTED — ADD DETAILS (OPTIONAL)
+        <div style={{
+          ...styles.detailBox,
+          borderColor: selected.color,
+          animation: 'fadeUp 0.28s ease',
+        }}>
+          <p style={{ ...styles.detailLabel, color: selected.color }} className="mono">
+            DESCRIBE THE SITUATION
           </p>
           <div style={{ position: 'relative' }}>
             <textarea
               value={message}
               onChange={(e) => setMessage(e.target.value)}
-              placeholder={`Describe the situation. Any language is fine.`}
+              placeholder="Any language is fine..."
               rows={3}
               style={styles.textarea}
               autoFocus
             />
-            {recognitionRef.current && (
+            {isSupported && (
               <button
                 onClick={toggleListening}
                 style={{
                   ...styles.micBtn,
-                  background: isListening ? 'var(--critical)' : 'var(--bg-surface)',
-                  color: isListening ? 'white' : 'var(--text-primary)',
+                  background: isListening ? 'var(--red)' : 'var(--bg-surface)',
+                  color: isListening ? 'white' : 'var(--text-secondary)',
+                  borderColor: isListening ? 'var(--red)' : 'var(--border-mid)',
                   animation: isListening ? 'pulse-ring 1.5s infinite' : 'none',
                 }}
                 title={isListening ? "Stop listening" : "Start voice input"}
               >
-                {isListening ? '🎙️' : '🎤'}
+                <span className="mono" style={{ fontSize: '10px', fontWeight: 'bold' }}>M</span>
               </button>
             )}
           </div>
@@ -177,9 +211,10 @@ function SOSButtons({ onSOS, loading }) {
               background: loading ? 'var(--bg-elevated)' : selected.color,
               cursor: loading ? 'not-allowed' : 'pointer',
             }}
-            className="display"
           >
-            {loading ? 'SENDING ALERT...' : `SEND ${selected.label} ALERT`}
+            <span style={{ fontFamily: 'var(--font-body)', fontSize: '13px', fontWeight: 600, letterSpacing: '1.5px' }}>
+              {loading ? 'TRANSMITTING...' : `SEND ${selected.label} ALERT`}
+            </span>
           </button>
         </div>
       )}
@@ -189,10 +224,10 @@ function SOSButtons({ onSOS, loading }) {
 
 const styles = {
   instruction: {
-    fontSize: '0.7rem',
+    fontSize: '9px',
     color: 'var(--text-muted)',
-    letterSpacing: '2px',
-    marginBottom: '12px',
+    letterSpacing: '3px',
+    marginBottom: '14px',
     textAlign: 'center',
   },
   grid: {
@@ -204,77 +239,94 @@ const styles = {
     display: 'flex',
     flexDirection: 'column',
     alignItems: 'flex-start',
-    gap: '6px',
-    padding: '16px',
+    gap: '8px',
+    padding: '18px 14px',
     border: '1px solid',
-    borderRadius: 'var(--radius-md)',
+    borderRadius: 'var(--radius-lg)',
     cursor: 'pointer',
     transition: 'var(--transition)',
     textAlign: 'left',
-    background: 'var(--bg-surface)',
+    background: 'var(--bg-elevated)',
+    position: 'relative',
+    overflow: 'hidden',
+  },
+  iconBox: {
+    width: '32px',
+    height: '32px',
+    borderRadius: '6px',
+    border: '1px solid',
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'center',
   },
   btnLabel: {
-    fontFamily: "'DM Mono', monospace",
-    fontSize: '0.85rem',
-    fontWeight: '500',
-    letterSpacing: '1px',
+    fontFamily: 'var(--font-body)',
+    fontSize: '13px',
+    fontWeight: 'bold',
+    letterSpacing: '0.5px',
   },
   btnSub: {
-    fontSize: '0.7rem',
+    fontFamily: 'var(--font-mono)',
+    fontSize: '10px',
     color: 'var(--text-muted)',
     lineHeight: 1.3,
   },
   detailBox: {
-    marginTop: '16px',
+    marginTop: '14px',
     padding: '16px',
     border: '1px solid',
-    borderRadius: 'var(--radius-md)',
-    background: 'var(--bg-surface)',
+    borderRadius: 'var(--radius-lg)',
+    background: 'var(--bg-elevated)',
   },
   detailLabel: {
-    fontSize: '0.7rem',
-    letterSpacing: '1px',
+    fontSize: '9px',
+    letterSpacing: '2px',
     marginBottom: '10px',
+    fontFamily: 'var(--font-mono)',
   },
   textarea: {
     width: '100%',
-    background: 'var(--bg-elevated)',
-    border: '1px solid var(--border-default)',
-    borderRadius: 'var(--radius-sm)',
+    background: 'var(--bg-surface)',
+    border: 'none',
+    borderBottom: '1px solid var(--border-mid)',
+    borderRadius: '0',
     color: 'var(--text-primary)',
-    fontFamily: "'DM Sans', sans-serif",
-    fontSize: '0.95rem',
-    padding: '10px 12px',
-    paddingRight: '45px',
+    fontFamily: 'var(--font-body)',
+    fontSize: '14px',
+    padding: '10px 40px 10px 0',
     resize: 'none',
     outline: 'none',
     lineHeight: 1.6,
+    transition: 'border-color 0.2s ease',
   },
   micBtn: {
     position: 'absolute',
-    bottom: '10px',
-    right: '10px',
-    width: '32px',
-    height: '32px',
-    border: '1px solid var(--border-default)',
+    bottom: '8px',
+    right: '4px',
+    width: '28px',
+    height: '28px',
+    border: '1px solid',
     borderRadius: '50%',
     display: 'flex',
     justifyContent: 'center',
     alignItems: 'center',
     cursor: 'pointer',
-    fontSize: '1rem',
     transition: 'var(--transition)',
+    background: 'var(--bg-surface)',
   },
   sendBtn: {
-    marginTop: '10px',
+    marginTop: '14px',
     width: '100%',
     padding: '14px',
     border: 'none',
-    borderRadius: 'var(--radius-md)',
+    borderRadius: 'var(--radius)',
     color: 'white',
-    fontSize: '1rem',
-    letterSpacing: '2px',
+    cursor: 'pointer',
     transition: 'var(--transition)',
+    height: '48px',
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'center',
   },
 };
 

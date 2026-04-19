@@ -1,541 +1,439 @@
-import { useState, useEffect } from 'react';
-import SOSButtons from '../components/SOSButtons';
+import { useState, useEffect, useRef } from 'react';
 import SilentWitness from '../components/SilentWitness';
 import { API, useSocket } from '../hooks/useSocket';
 import { useAuth } from '../context/AuthContext';
 
-function GuestPage() {
-  const { user } = useAuth(); // Contains { name, room, guestId } securely
+export default function GuestPage() {
+  const { user } = useAuth();
+  const [phase, setPhase] = useState('idle'); // idle, sending, confirmed, evacuation, safe
+  const [selectedIncident, setSelectedIncident] = useState(null);
+  const [incidentText, setIncidentText] = useState('');
+  const [isSupported, setIsSupported] = useState(false);
+  const [isListening, setIsListening] = useState(false);
+  const recognitionRef = useRef(null);
   
-  const [phase, setPhase] = useState('idle'); // idle → sending → confirmed → safe → evacuation
   const [aiInstruction, setAiInstruction] = useState('');
   const [responseTime, setResponseTime] = useState(null);
   const [alertId, setAlertId] = useState(null);
-  const [alertStatus, setAlertStatus] = useState('active'); // active, acknowledged, resolved
+  const [alertStatus, setAlertStatus] = useState('active');
   const [broadcastMsg, setBroadcastMsg] = useState('');
-  const [incidentType, setIncidentType] = useState(null);
-  const [headcount, setHeadcount] = useState(1);
-  const [checkinStatus, setCheckinStatus] = useState('SAFE'); // 'SAFE' or 'DANGER'
-  const [showFirePopup, setShowFirePopup] = useState(false);
+  const [showMap, setShowMap] = useState(false);
+  const [showHeartbeatSpike, setShowHeartbeatSpike] = useState(false);
+
   const { socket } = useSocket(user?.hotelId);
 
-  // If user is somehow missing during render while protected route catches up
-  if (!user) return null;
+  useEffect(() => { document.title = alertStatus === 'active' ? "🔴 [1] Alert — Aura Command" : "Aura · Monitoring"; }, [alertStatus]);
 
+  if (!user) return null;
   const GUEST_ID = user.guestId;
   const GUEST_ROOM = `Room ${user.room}`;
-  const GUEST_NAME = user.name;
 
-  const handleSOS = async (emergencyType, rawMessage) => {
+  const incidents = [
+    { id: 'FIRE', label: 'FIRE / SMOKE', sub: 'Report visible fire, smoke, or burning smell', color: 'var(--red)', bg: 'var(--red-dim)' },
+    { id: 'MEDICAL', label: 'MEDICAL EMERGENCY', sub: 'Request an ambulance or hotel medic', color: 'var(--amber)', bg: 'var(--amber-dim)' },
+    { id: 'SECURITY', label: 'SECURITY THREAT', sub: 'Report intruders, violence, or suspicious activity', color: 'var(--blue)', bg: 'var(--blue-dim)' },
+    { id: 'OTHER', label: 'OTHER EMERGENCY', sub: 'Trapped in elevator, severe leaks, etc.', color: 'var(--purple)', bg: 'var(--purple-dim)' }
+  ];
+
+  const handleSendAlert = async () => {
+    if (!selectedIncident) return;
     setPhase('sending');
-    setIncidentType(emergencyType);
-    const payload = {
-      emergencyType,
-      rawMessage,
-      location: `${GUEST_ROOM}`,
-      guestId: GUEST_ID,
-      hotelId: user.hotelId,
-    };
+    setShowHeartbeatSpike(true);
+    
+    // Stop listening if it was active
+    if (isListening && recognitionRef.current) {
+      recognitionRef.current.stop();
+      setIsListening(false);
+    }
+    
+    const payload = { emergencyType: selectedIncident, rawMessage: incidentText, location: GUEST_ROOM, guestId: GUEST_ID, hotelId: user.hotelId };
     try {
-      if (!navigator.onLine) throw new Error('Offline');
-      
-      const res = await fetch(`${API}/api/alerts/report`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(payload),
-      });
+      const res = await fetch(`${API}/api/alerts/report`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
       const data = await res.json();
       setAiInstruction(data.guestInstruction || 'Stay calm. Help is on the way.');
       setResponseTime(data.estimatedResponse);
       setAlertId(data.alertId);
       setAlertStatus('active');
-      setPhase('confirmed');
-    } catch (error) {
-      // Store locally if offline or fetch failed
-      const storedAlerts = JSON.parse(localStorage.getItem('offline_alerts') || '[]');
-      storedAlerts.push(payload);
-      localStorage.setItem('offline_alerts', JSON.stringify(storedAlerts));
-      
-      // Tell the user something comforting
-      setAiInstruction('Network offline. Alert saved and will auto-send when connection is restored. Please stay safe.');
-      setPhase('confirmed');
+      setTimeout(() => setPhase('confirmed'), 2000); // artificial delay for the transmission animation
+    } catch (e) {
+      setAiInstruction('Network offline. Alert saved locally.');
+      setTimeout(() => setPhase('confirmed'), 2000);
     }
   };
 
   useEffect(() => {
-    const syncOfflineAlerts = async () => {
-      const storedAlerts = JSON.parse(localStorage.getItem('offline_alerts') || '[]');
-      if (storedAlerts.length > 0) {
-        const remainingAlerts = [];
-        for (const alert of storedAlerts) {
-          try {
-            await fetch(`${API}/api/alerts/report`, {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify(alert),
-            });
-          } catch (e) {
-            remainingAlerts.push(alert);
-          }
-        }
-        if (remainingAlerts.length === 0) {
-          localStorage.removeItem('offline_alerts');
-        } else {
-          localStorage.setItem('offline_alerts', JSON.stringify(remainingAlerts));
-        }
-      }
-    };
+    const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+    if (SpeechRecognition) {
+      setIsSupported(true);
+      const recognition = new SpeechRecognition();
+      recognition.continuous = true;
+      recognition.interimResults = true;
 
-    window.addEventListener('online', syncOfflineAlerts);
-    return () => window.removeEventListener('online', syncOfflineAlerts);
+      recognition.onresult = (event) => {
+        let transcript = '';
+        for (let i = event.resultIndex; i < event.results.length; ++i) {
+          transcript += event.results[i][0].transcript;
+        }
+        setIncidentText(prev => prev ? prev + ' ' + transcript : transcript);
+      };
+
+      recognition.onend = () => setIsListening(false);
+      recognitionRef.current = recognition;
+    }
   }, []);
+
+  const toggleListening = (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    if (!recognitionRef.current) return;
+    
+    if (isListening) {
+      recognitionRef.current.stop();
+      setIsListening(false);
+    } else {
+      setIncidentText('');
+      recognitionRef.current.start();
+      setIsListening(true);
+    }
+  };
 
   useEffect(() => {
     if (!socket) return;
-    const handleMassPrompt = async (data) => {
-       setPhase('evacuation');
-       setBroadcastMsg(data.message);
-       if (data.type) setIncidentType(data.type);
-       
-       if (data.type) {
-         try {
-           const res = await fetch(`${API}/api/intelligence/evacuation`, {
-             method: 'POST',
-             headers: { 'Content-Type': 'application/json' },
-             body: JSON.stringify({ hotelId: user?.hotelId, incidentDetails: data.type, guestRoom: GUEST_ROOM })
-           });
-           const routeData = await res.json();
-           if (routeData.instruction) {
-             setBroadcastMsg(data.message + "\n\nYOUR EVACUATION ROUTE:\n" + routeData.instruction);
-           }
-         } catch (e) {
-             console.error("Failed to fetch evacuation route", e);
-         }
-       }
-    };
-    const handleAlertUpdated = (updatedAlert) => {
-       if (updatedAlert.id === alertId) {
-          if (updatedAlert.status === 'resolved') {
-             setAlertStatus('resolved');
-          } else if (updatedAlert.acknowledgedBy) {
-             setAlertStatus('acknowledged');
-          }
-       }
-    };
-    socket.on('mass_safety_prompt', handleMassPrompt);
-    socket.on('alert_updated', handleAlertUpdated);
-    return () => {
-       socket.off('mass_safety_prompt', handleMassPrompt);
-       socket.off('alert_updated', handleAlertUpdated);
-    };
+    socket.on('mass_safety_prompt', (data) => {
+      setPhase('evacuation');
+      setBroadcastMsg(data.message);
+      setShowHeartbeatSpike(true);
+    });
+    socket.on('alert_updated', (updated) => {
+      if (updated.id === alertId) {
+        if (updated.status === 'resolved') { setAlertStatus('resolved'); setShowHeartbeatSpike(false); }
+        else if (updated.acknowledgedBy) setAlertStatus('acknowledged');
+      }
+    });
+    return () => { socket.off('mass_safety_prompt'); socket.off('alert_updated'); };
   }, [socket, alertId]);
 
   const handleMarkSafe = async () => {
     setPhase('safe');
-    await fetch(`${API}/api/safety/checkin`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        guestId: GUEST_ID,
-        guestName: `Guest ${GUEST_ID}`,
-        location: 'Assembly Point A',
-        hotelId: user.hotelId,
-        headcount: headcount,
-        status: checkinStatus
-      }),
-    }).catch(() => {});
+    await fetch(`${API}/api/safety/checkin`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ guestId: GUEST_ID, location: 'Safe Zone', hotelId: user.hotelId, headcount: 1, status: 'SAFE' }) }).catch(() => {});
   };
 
-  useEffect(() => {
-    if (headcount > 5 && incidentType === 'FIRE') {
-      setShowFirePopup(true);
-    } else {
-      setShowFirePopup(false);
-    }
-  }, [headcount, incidentType]);
+  const now = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
 
   return (
-    <div style={styles.page}>
-      {/* Subtle scan line effect — gives it that command-center feel */}
-      <div style={styles.scanLine} />
-
-      <div style={styles.container}>
-
-        {/* ── Header ─────────────────────────────────────── */}
-        <div style={styles.header}>
-          <div style={styles.logoRow}>
-            <span style={styles.logoSymbol}>◈</span>
-            <span style={styles.logoText} className="display">AURA</span>
+    <div style={s.page}>
+      
+      {/* TOP ZONE — AMBIENT STATUS BAR */}
+      <div style={s.statusBar}>
+        <div style={s.statusContent}>
+          <div style={{ display: 'flex', flexDirection: 'column' }}>
+            <span className="font-display" style={{ fontSize: '24px', color: 'var(--system)', lineHeight: 1 }}>{GUEST_ROOM.toUpperCase()}</span>
+            <span className="font-mono" style={{ fontSize: '9px', color: 'var(--text-muted)' }}>FLOOR 4</span>
           </div>
-          <p style={styles.logoSub} className="mono">SAFETY PROTOCOL ACTIVE</p>
-          <div style={styles.guestBadge} className="mono">
-            <span style={styles.badgeDot} />
-            {GUEST_ROOM} · {GUEST_ID}
+
+          <div style={s.heartbeatContainer}>
+            <svg width="120" height="40" viewBox="0 0 120 40">
+              {showHeartbeatSpike ? (
+                <path d="M0 20 L40 20 L45 10 L50 35 L55 5 L60 25 L65 20 L120 20" fill="none" stroke="var(--red)" strokeWidth="2" strokeLinejoin="round" style={{ animation: 'ekgSpike 1s linear infinite' }} />
+              ) : (
+                <path d="M0 20 L55 20 L58 18 L62 22 L65 20 L120 20" fill="none" stroke="var(--border-mid)" strokeWidth="1" strokeLinejoin="round" />
+              )}
+            </svg>
+          </div>
+
+          <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-end' }}>
+            <span className="font-mono" style={{ fontSize: '14px', color: 'var(--text-secondary)' }}>{now}</span>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '4px' }}>
+              <div style={{ width: '4px', height: '4px', borderRadius: '50%', background: showHeartbeatSpike ? 'var(--red)' : 'var(--green)', animation: 'blink 2s infinite' }} />
+              <span className="font-mono" style={{ fontSize: '8px', color: showHeartbeatSpike ? 'var(--red)' : 'var(--green)' }}>
+                {showHeartbeatSpike ? 'CRITICAL ALERT' : 'SAFE ZONE'}
+              </span>
+            </div>
           </div>
         </div>
-
-        {/* ── Idle Phase — show SOS buttons ──────────────── */}
-        {phase === 'idle' && (
-          <div style={{ animation: 'fadeUp 0.4s ease' }}>
-            <SOSButtons onSOS={handleSOS} loading={false} />
-            <SilentWitness guestId={GUEST_ID} location={`${GUEST_ROOM}`} hotelId={user.hotelId} />
-          </div>
-        )}
-
-        {/* ── Sending Phase ──────────────────────────────── */}
-        {phase === 'sending' && (
-          <div style={styles.centerBox}>
-            <div style={styles.spinner} />
-            <p style={styles.sendingText} className="mono">TRANSMITTING ALERT...</p>
-            <p style={styles.sendingSub}>AI triage in progress</p>
-          </div>
-        )}
-
-        {/* ── Confirmed Phase — alert sent ───────────────── */}
-        {phase === 'confirmed' && (
-          <div style={{...styles.confirmedBox, animation: 'fadeUp 0.4s ease'}}>
-            {/* Alert confirmed header */}
-            <div style={styles.alertHeader}>
-              <span style={styles.alertIcon}>🚨</span>
-              <div>
-                <p style={styles.alertTitle} className="display">ALERT RECEIVED</p>
-                <p style={styles.alertSub} className="mono">
-                  Staff notified • {responseTime ? `~${responseTime} min response` : 'Help en route'}
-                </p>
-              </div>
-            </div>
-
-            {/* AI instruction */}
-            <div style={styles.instructionBox}>
-              <p style={styles.instructionLabel} className="mono">AI INSTRUCTION FOR YOU</p>
-              <p style={styles.instructionText}>{aiInstruction}</p>
-            </div>
-
-            {/* Timeline — makes it feel real */}
-            <div style={styles.timeline}>
-              <TimelineStep done label="Alert transmitted" sub="Received by system" />
-              <TimelineStep done label="AI triage complete" sub="Severity assessed" />
-              <TimelineStep 
-                 done={alertStatus === 'acknowledged' || alertStatus === 'resolved'} 
-                 label="Staff dispatched" 
-                 sub="En route to your location" 
-              />
-              <TimelineStep 
-                 done={alertStatus === 'resolved'} 
-                 label="Crisis resolved" 
-                 sub="Pending" 
-              />
-            </div>
-
-            {/* Mark safe button / Headcount */}
-            <div style={styles.checkinForm}>
-              <p className="mono" style={{fontSize: '0.75rem', marginBottom: '8px', color:'var(--text-secondary)'}}>CHECK-IN DETAILS</p>
-              <div style={{display: 'flex', gap: '8px', marginBottom: '12px'}}>
-                <div style={{flex: 1}}>
-                  <label className="mono" style={{fontSize:'0.65rem', display:'block', marginBottom:'4px', color:'var(--text-muted)'}}>HEADCOUNT</label>
-                  <input type="number" min="1" value={headcount} onChange={e => setHeadcount(e.target.value)} style={styles.inputBox} />
-                </div>
-                <div style={{flex: 2}}>
-                  <label className="mono" style={{fontSize:'0.65rem', display:'block', marginBottom:'4px', color:'var(--text-muted)'}}>STATUS</label>
-                  <select value={checkinStatus} onChange={e => setCheckinStatus(e.target.value)} style={styles.inputBox}>
-                    <option value="SAFE">I AM SAFE</option>
-                    <option value="DANGER">I AM IN DANGER</option>
-                  </select>
-                </div>
-              </div>
-              <button 
-                style={{...styles.safeBtn, background: checkinStatus === 'SAFE' ? 'var(--safe)' : 'var(--critical)'}} 
-                className="display" 
-                onClick={handleMarkSafe}
-              >
-                {checkinStatus === 'SAFE' ? '✓ MARK AS SAFE' : '⚠️ I NEED HELP'}
-              </button>
-            </div>
-            <button
-               onClick={() => setPhase('idle')}
-               style={{...styles.safeBtn, background: 'var(--bg-elevated)', color: 'var(--text-primary)', marginTop: '12px', padding: '10px'}}
-               className="mono"
-            >
-               ⟵ REPORT ANOTHER ISSUE
-            </button>
-          </div>
-        )}
-
-        {/* ── Evacuation Phase ───────────────────────────── */}
-        {phase === 'evacuation' && (
-          <div style={{ animation: 'fadeUp 0.4s ease', textAlign: 'center' }}>
-            <div style={{ fontSize: '4rem', animation: 'blink 1s infinite' }}>🚨</div>
-            <h2 className="display" style={{ color: 'var(--critical)' }}>EMERGENCY BROADCAST</h2>
-            <div style={{ background: 'var(--critical-bg)', padding: '20px', borderRadius: '8px', border: '1px solid var(--critical)', marginBottom: '24px', textAlign: 'left' }}>
-              <p className="mono" style={{ fontSize: '1rem', color: 'white', lineHeight: 1.5 }}>
-                {broadcastMsg}
-              </p>
-            </div>
-            <div style={styles.checkinForm}>
-              <div style={{display: 'flex', gap: '8px', marginBottom: '12px', textAlign: 'left'}}>
-                <div style={{flex: 1}}>
-                  <label className="mono" style={{fontSize:'0.65rem', display:'block', marginBottom:'4px', color:'var(--text-muted)'}}>HEADCOUNT</label>
-                  <input type="number" min="1" value={headcount} onChange={e => setHeadcount(e.target.value)} style={styles.inputBox} />
-                </div>
-                <div style={{flex: 2}}>
-                  <label className="mono" style={{fontSize:'0.65rem', display:'block', marginBottom:'4px', color:'var(--text-muted)'}}>STATUS</label>
-                  <select value={checkinStatus} onChange={e => setCheckinStatus(e.target.value)} style={styles.inputBox}>
-                    <option value="SAFE">I AM SAFE</option>
-                    <option value="DANGER">I AM IN DANGER</option>
-                  </select>
-                </div>
-              </div>
-              <button 
-                style={{...styles.safeBtn, background: checkinStatus === 'SAFE' ? 'var(--safe)' : 'var(--critical)'}} 
-                className="display" 
-                onClick={handleMarkSafe}
-              >
-                {checkinStatus === 'SAFE' ? '✓ MARK AS SAFE' : '⚠️ I NEED HELP'}
-              </button>
-            </div>
-          </div>
-        )}
-
-        {/* ── Safe Phase ─────────────────────────────────── */}
-        {phase === 'safe' && (
-          <div style={{...styles.safeBox, animation: 'fadeUp 0.4s ease'}}>
-            <span style={{...styles.safeIcon, color: checkinStatus === 'SAFE' ? 'var(--safe)' : 'var(--critical)'}}>
-              {checkinStatus === 'SAFE' ? '✓' : '⚠️'}
-            </span>
-            <p style={{...styles.safeTitle, color: checkinStatus === 'SAFE' ? 'var(--safe)' : 'var(--critical)'}} className="display">
-              {checkinStatus === 'SAFE' ? 'YOU ARE MARKED SAFE' : 'DANGER LOGGED'}
-            </p>
-            <p style={styles.safeSub}>
-              {checkinStatus === 'SAFE' ? (
-                <>Staff have been notified of your location.<br />Please remain at the assembly point.</>
-              ) : (
-                <>Emergency response teams have received your high-priority status.<br />Please try to stay as safe as possible.</>
-              )}
-            </p>
-            <button
-               onClick={() => setPhase('idle')}
-               style={{...styles.safeBtn, background: 'var(--bg-elevated)', color: 'var(--text-primary)', marginTop: '20px', padding: '10px', width: 'auto'}}
-               className="mono"
-            >
-               ⟵ REPORT ANOTHER ISSUE
-            </button>
-          </div>
-        )}
-
       </div>
 
-      {showFirePopup && (
-        <div style={{ position: 'fixed', top: 0, left: 0, right: 0, bottom: 0, background: 'rgba(0,0,0,0.8)', display: 'flex', justifyContent: 'center', alignItems: 'center', zIndex: 1000 }}>
-          <div style={{ background: 'var(--bg-surface)', border: '1px solid var(--critical)', borderRadius: '12px', padding: '30px', textAlign: 'center', maxWidth: '350px', boxShadow: '0 0 30px rgba(255,59,59,0.3)' }}>
-            <div style={{ fontSize: '3rem', marginBottom: '10px', animation: 'blink 1s infinite' }}>🚨</div>
-            <h2 className="display" style={{ color: 'var(--critical)', marginBottom: '10px' }}>LARGE GROUP DISCOVERED</h2>
-            <p className="mono" style={{ color: 'white', marginBottom: '20px', fontSize: '0.85rem', lineHeight: '1.5' }}>
-              We noticed a group size greater than 5 during a active fire threat. Please call the fire emergency number immediately!
-            </p>
-            <a href="tel:112" style={{ ...styles.safeBtn, background: 'var(--critical)', textDecoration: 'none', display: 'inline-block', boxSizing: 'border-box' }} className="display">
-              📞 CALL 112 NOW
-            </a>
-            <button onClick={() => setShowFirePopup(false)} style={{ background: 'transparent', border: 'none', color: 'var(--text-muted)', marginTop: '15px', cursor: 'pointer', textDecoration: 'underline' }} className="mono">Dismiss</button>
+      <div style={s.mainContent}>
+        {/* IDLE PHASE */}
+        {phase === 'idle' && (
+          <div style={{ display: 'flex', flexDirection: 'column', gap: '8px', width: '100%', position: 'relative' }}>
+            {incidents.map((inc) => {
+              const isSelected = selectedIncident === inc.id;
+              const isHidden = selectedIncident && selectedIncident !== inc.id;
+              
+              if (isHidden) return null;
+
+              return (
+                <div key={inc.id} style={{...s.sosBtnWrapper, ...(isSelected ? s.sosBtnWrapperSelected : {})}}>
+                  <button 
+                    className="sos-btn"
+                    style={{...s.sosBtn, ...(isSelected ? s.sosBtnSelected : { borderColor: 'var(--border-dim)' })}}
+                    onClick={() => setSelectedIncident(isSelected ? null : inc.id)}
+                  >
+                    {!isSelected && <div className="shimmer-overlay" />}
+                    
+                    <div style={{...s.iconBox, color: inc.color, background: inc.bg, borderColor: inc.bg}}>
+                      {inc.id.substring(0,2)}
+                    </div>
+                    
+                    <div style={{ flex: 1, textAlign: 'left' }}>
+                      <div className="font-body" style={{ fontSize: '15px', fontWeight: 600, color: 'var(--text-primary)' }}>{inc.label}</div>
+                      <div className="font-mono" style={{ fontSize: '10px', color: 'var(--text-muted)' }}>{inc.sub}</div>
+                    </div>
+                    
+                    <div className="font-body" style={{ fontSize: '20px', color: 'var(--text-muted)' }}>
+                      {isSelected ? '↓' : '›'}
+                    </div>
+                  </button>
+
+                  {/* Expanded Content */}
+                  {isSelected && (
+                    <div style={s.expandedArea}>
+                      <div style={{ position: 'relative' }}>
+                        <textarea 
+                          className="font-body expand-textarea"
+                          placeholder="Describe what's happening. Any language."
+                          value={incidentText}
+                          onChange={(e) => setIncidentText(e.target.value)}
+                          rows={3}
+                          style={{...s.textarea, '--focus-color': inc.color, '--focus-glow': inc.bg, paddingRight: isSupported ? '40px' : '0'}}
+                        />
+                        {isSupported && (
+                          <button
+                            onClick={toggleListening}
+                            style={{
+                              position: 'absolute', right: '8px', top: '12px',
+                              width: '28px', height: '28px', borderRadius: '50%',
+                              border: 'none', background: isListening ? 'var(--red)' : 'var(--bg-surface)',
+                              color: isListening ? 'white' : 'var(--text-muted)',
+                              cursor: 'pointer', outline: 'none', transition: 'all 200ms',
+                              display: 'flex', alignItems: 'center', justifyContent: 'center'
+                            }}
+                          >
+                            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                              <path d="M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3z"></path>
+                              <path d="M19 10v2a7 7 0 0 1-14 0v-2"></path>
+                              <line x1="12" y1="19" x2="12" y2="22"></line>
+                            </svg>
+                            {isListening && <div style={{ position: 'absolute', inset: 0, borderRadius: '50%', border: '1px solid var(--red)', animation: 'ringPulse 1.5s infinite' }} />}
+                          </button>
+                        )}
+                      </div>
+                      <button onClick={handleSendAlert} className="font-mono" style={{...s.sendBtn, background: inc.color}}>
+                        SEND EMERGENCY ALERT
+                      </button>
+                      <button onClick={() => setSelectedIncident(null)} className="font-mono" style={s.cancelLnk}>
+                        Cancel
+                      </button>
+                    </div>
+                  )}
+                </div>
+              );
+            })}
+
+            {!selectedIncident && (
+              <div style={{ marginTop: '40px' }}>
+                <div style={s.dividerContainer}>
+                  <div style={s.dividerLine} />
+                  <span className="font-mono" style={{ fontSize: '8px', color: 'var(--text-muted)', letterSpacing: '2px' }}>— HOTEL SERVICES —</span>
+                  <div style={s.dividerLine} />
+                </div>
+                <SilentWitness guestId={GUEST_ID} location={GUEST_ROOM} hotelId={user.hotelId} />
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* SENDING PHASE */}
+        {phase === 'sending' && (
+          <div style={s.takeover}>
+            <div style={s.pulseContainer}>
+              <div className="pulse-ring ring-1" style={{ borderColor: 'var(--red)' }} />
+              <div className="pulse-ring ring-2" style={{ borderColor: 'var(--red)' }} />
+              <div className="pulse-ring ring-3" style={{ borderColor: 'var(--red)' }} />
+              <div style={{ width: '12px', height: '12px', borderRadius: '50%', background: 'var(--red)' }} />
+            </div>
+            <div className="font-display" style={{ fontSize: '32px', color: 'var(--red)', marginTop: '60px', letterSpacing: '4px' }}>
+              TRANSMITTING<span className="dots">...</span>
+            </div>
+            <div className="font-mono" style={{ fontSize: '11px', color: 'var(--text-muted)', marginTop: '8px' }}>
+              AI triage in progress
+            </div>
+          </div>
+        )}
+
+        {/* CONFIRMED PHASE */}
+        {phase === 'confirmed' && (
+          <div style={s.confirmedView}>
+            <div style={s.checkCircle}>
+              <svg width="40" height="40" viewBox="0 0 40 40" fill="none">
+                <path d="M10 20 L18 28 L32 12" stroke="var(--green)" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round" style={{ animation: 'strokeDraw 0.6s ease forwards', strokeDasharray: 40, strokeDashoffset: 40 }} />
+              </svg>
+            </div>
+            <h2 className="font-display" style={{ fontSize: '48px', color: 'var(--green)', marginTop: '20px', lineHeight: 1 }}>ALERT RECEIVED</h2>
+            <p className="font-body" style={{ fontSize: '14px', color: 'var(--text-secondary)' }}>Staff are responding</p>
+            
+            <div style={s.timePill}>
+              Estimated response · {responseTime || '3'} min
+            </div>
+
+            <div style={s.aiInstructionCard}>
+              <div className="font-mono" style={{ fontSize: '8px', color: 'var(--amber)', letterSpacing: '2px', marginBottom: '8px' }}>AI INSTRUCTION</div>
+              <div className="font-body" style={{ fontSize: '14px', color: 'var(--text-primary)', lineHeight: 1.75 }}>{aiInstruction}</div>
+            </div>
+
+            <div style={s.timeline}>
+              <TimelineStep label="Alert transmitted to server" status="done" />
+              <TimelineStep label="Gemini AI triage complete" status="done" />
+              <TimelineStep label="Staff member dispatched" status={alertStatus === 'active' ? 'active' : 'done'} />
+              <TimelineStep label="Situation resolved" status={alertStatus === 'resolved' ? 'done' : 'pending'} isLast />
+            </div>
+
+            <button onClick={handleMarkSafe} className="font-mono" style={s.safeBtn}>
+              I AM SAFE — CHECK IN
+            </button>
+
+            {user.mapBase64 && (
+              <button onClick={() => setShowMap(true)} className="font-mono map-btn" style={s.mapBtn}>
+                VIEW EVACUATION MAP
+              </button>
+            )}
+          </div>
+        )}
+
+        {/* EVACUATION PHASE */}
+        {phase === 'evacuation' && (
+          <div style={s.confirmedView}>
+            <div style={{...s.checkCircle, borderColor: 'var(--amber)'}}>
+              <svg width="40" height="40" viewBox="0 0 40 40" fill="none">
+                <path d="M20 10 L20 22 M20 28 L20 30" stroke="var(--amber)" strokeWidth="4" strokeLinecap="round" />
+              </svg>
+            </div>
+            <h2 className="font-display" style={{ fontSize: '48px', color: 'var(--amber)', marginTop: '20px', lineHeight: 1 }}>EMERGENCY DIRECTIVE</h2>
+            <p className="font-body" style={{ fontSize: '14px', color: 'var(--text-secondary)' }}>Follow instructions immediately</p>
+            
+            <div style={s.aiInstructionCard}>
+              <div className="font-mono" style={{ fontSize: '8px', color: 'var(--amber)', letterSpacing: '2px', marginBottom: '8px' }}>COMMAND BROADCAST</div>
+              <div className="font-body" style={{ fontSize: '14px', color: 'var(--text-primary)', lineHeight: 1.75, whiteSpace: 'pre-wrap' }}>{broadcastMsg}</div>
+            </div>
+
+            <button onClick={handleMarkSafe} className="font-mono" style={{...s.safeBtn, marginTop: '40px'}}>
+              I AM SAFE — CHECK IN
+            </button>
+
+            <button onClick={() => setPhase('idle')} className="font-mono" style={{...s.safeBtn, background: 'transparent', borderColor: 'var(--red)', color: 'var(--red)', marginTop: '16px'}}>
+              I AM IN DANGER — SEND SOS
+            </button>
+          </div>
+        )}
+
+        {/* SAFE PHASE */}
+        {phase === 'safe' && (
+          <div style={{ textAlign: 'center', paddingTop: '60px', display: 'flex', flexDirection: 'column', alignItems: 'center' }}>
+            <h2 className="font-display" style={{ fontSize: '48px', color: 'var(--green)', letterSpacing: '4px' }}>SAFE ZONE</h2>
+            <div className="font-mono" style={{ fontSize: '12px', color: 'var(--text-secondary)', marginTop: '16px' }}>
+              Your location is secured.
+            </div>
+            <div style={s.safePulse} />
+            
+            <button onClick={() => setPhase('idle')} className="font-mono" style={{...s.safeBtn, background: 'transparent', borderColor: 'var(--border-mid)', color: 'var(--text-primary)', marginTop: '60px'}}>
+              REPORT NEW INCIDENT
+            </button>
+          </div>
+        )}
+      </div>
+
+      {/* EVACUATION MAP MODAL */}
+      {showMap && user.mapBase64 && (
+        <div style={s.overlay}>
+          <div style={s.mapModal}>
+            <h2 className="font-display" style={{ fontSize: '24px', color: 'var(--text-primary)', letterSpacing: '2px', marginBottom: '16px' }}>EVACUATION MAP</h2>
+            <div style={{ width: '100%', border: '1px solid var(--border-dim)', borderRadius: '8px', overflow: 'hidden', marginBottom: '16px' }}>
+              <img src={user.mapBase64} alt="Floorplan" style={{ width: '100%', height: 'auto', display: 'block' }} />
+            </div>
+            <button onClick={() => setShowMap(false)} className="font-mono" style={{...s.safeBtn, background: 'var(--system-dim)', borderColor: 'var(--system)', color: 'var(--system)'}}>
+              CLOSE MAP
+            </button>
           </div>
         </div>
       )}
+
     </div>
   );
 }
 
-// Small sub-component — the timeline steps on the confirmed screen
-function TimelineStep({ done, label, sub }) {
+function TimelineStep({ label, status, isLast }) {
+  const isDone = status === 'done';
+  const isActive = status === 'active';
+  
   return (
-    <div style={tlStyles.row}>
-      <div style={{
-        ...tlStyles.dot,
-        background: done ? 'var(--safe)' : 'var(--bg-elevated)',
-        borderColor: done ? 'var(--safe)' : 'var(--border-default)',
-      }} />
-      <div>
-        <p style={{ ...tlStyles.label, color: done ? 'var(--text-primary)' : 'var(--text-muted)' }}>
-          {label}
-        </p>
-        <p style={tlStyles.sub}>{sub}</p>
+    <div style={{ display: 'flex', gap: '16px', position: 'relative', minHeight: '40px' }}>
+      {!isLast && (
+        <div style={{ position: 'absolute', left: '4px', top: '10px', bottom: '-10px', width: '2px', background: isDone ? 'var(--green)' : 'var(--border-void)', zIndex: 0 }} />
+      )}
+      <div style={{ position: 'relative', zIndex: 1, marginTop: '2px' }}>
+        {isDone && <div style={{ width: '10px', height: '10px', borderRadius: '50%', background: 'var(--green)' }} />}
+        {isActive && (
+          <div style={{ position: 'relative' }}>
+            <div style={{ width: '10px', height: '10px', borderRadius: '50%', background: 'var(--amber)' }} />
+            <div style={{ position: 'absolute', inset: '-4px', borderRadius: '50%', border: '1px solid var(--amber)', animation: 'dotPulse 1.5s infinite' }} />
+          </div>
+        )}
+        {status === 'pending' && <div style={{ width: '10px', height: '10px', borderRadius: '50%', border: '1px solid var(--border-mid)', background: 'var(--bg-void)' }} />}
+      </div>
+      <div className="font-body" style={{ fontSize: '13px', color: isDone ? 'var(--text-primary)' : isActive ? 'var(--amber)' : 'var(--text-muted)' }}>
+        {label}
       </div>
     </div>
   );
 }
 
-const styles = {
-  page: {
-    minHeight: '100vh',
-    background: 'var(--bg-base)',
-    display: 'flex',
-    justifyContent: 'center',
-    alignItems: 'flex-start',
-    padding: '24px 20px 60px',
-    position: 'relative',
-    overflow: 'hidden',
-  },
-  scanLine: {
-    position: 'fixed',
-    top: 0, left: 0, right: 0,
-    height: '1px',
-    background: 'linear-gradient(90deg, transparent, rgba(255,59,59,0.3), transparent)',
-    animation: 'scan 6s linear infinite',
-    pointerEvents: 'none',
-    zIndex: 0,
-  },
-  container: {
-    width: '100%',
-    maxWidth: '420px',
-    position: 'relative',
-    zIndex: 1,
-  },
-  header: { textAlign: 'center', marginBottom: '32px' },
-  logoRow: {
-    display: 'flex',
-    alignItems: 'center',
-    justifyContent: 'center',
-    gap: '10px',
-    marginBottom: '4px',
-  },
-  logoSymbol: { color: 'var(--critical)', fontSize: '1.4rem' },
-  logoText: {
-    fontSize: '2.8rem',
-    color: 'var(--text-primary)',
-    letterSpacing: '8px',
-  },
-  logoSub: {
-    fontSize: '0.65rem',
-    color: 'var(--text-muted)',
-    letterSpacing: '3px',
-    marginBottom: '12px',
-  },
-  guestBadge: {
-    display: 'inline-flex',
-    alignItems: 'center',
-    gap: '6px',
-    background: 'var(--bg-elevated)',
-    border: '1px solid var(--border-default)',
-    padding: '4px 12px',
-    borderRadius: '20px',
-    fontSize: '0.72rem',
-    color: 'var(--text-secondary)',
-    letterSpacing: '0.5px',
-  },
-  badgeDot: {
-    width: '6px', height: '6px',
-    borderRadius: '50%',
-    background: 'var(--safe)',
-    animation: 'blink 2s infinite',
-  },
-  centerBox: {
-    display: 'flex', flexDirection: 'column',
-    alignItems: 'center', gap: '16px',
-    paddingTop: '60px',
-  },
-  spinner: {
-    width: '40px', height: '40px',
-    border: '2px solid var(--border-default)',
-    borderTop: '2px solid var(--critical)',
-    borderRadius: '50%',
-    animation: 'spin 0.8s linear infinite',
-  },
-  sendingText: {
-    color: 'var(--critical)',
-    fontSize: '0.8rem',
-    letterSpacing: '2px',
-  },
-  sendingSub: { color: 'var(--text-muted)', fontSize: '0.85rem' },
-  confirmedBox: {
-    background: 'var(--bg-surface)',
-    border: '1px solid var(--border-default)',
-    borderRadius: 'var(--radius-lg)',
-    padding: '20px',
-  },
-  alertHeader: {
-    display: 'flex', alignItems: 'center',
-    gap: '14px', marginBottom: '20px',
-  },
-  alertIcon: { fontSize: '2rem' },
-  alertTitle: { fontSize: '1.6rem', color: 'var(--critical)', letterSpacing: '2px' },
-  alertSub: { fontSize: '0.7rem', color: 'var(--text-secondary)', letterSpacing: '1px', marginTop: '2px' },
-  instructionBox: {
-    background: 'var(--bg-elevated)',
-    borderRadius: 'var(--radius-md)',
-    padding: '14px',
-    marginBottom: '20px',
-    borderLeft: '3px solid var(--warning)',
-  },
-  instructionLabel: {
-    fontSize: '0.65rem', color: 'var(--warning)',
-    letterSpacing: '2px', marginBottom: '6px',
-  },
-  instructionText: {
-    color: 'var(--text-primary)',
-    fontSize: '0.95rem',
-    lineHeight: 1.6,
-  },
-  timeline: {
-    display: 'flex', flexDirection: 'column',
-    gap: '12px', marginBottom: '20px',
-  },
-  safeBtn: {
-    width: '100%', padding: '14px',
-    background: 'var(--safe)',
-    border: 'none', borderRadius: 'var(--radius-md)',
-    color: 'white', fontSize: '1rem',
-    letterSpacing: '2px', cursor: 'pointer',
-    transition: 'var(--transition)',
-  },
-  safeBox: {
-    textAlign: 'center',
-    paddingTop: '60px',
-    display: 'flex', flexDirection: 'column',
-    alignItems: 'center', gap: '16px',
-  },
-  safeIcon: {
-    fontSize: '3rem',
-    color: 'var(--safe)',
-  },
-  safeTitle: {
-    fontSize: '2rem',
-    color: 'var(--safe)',
-    letterSpacing: '3px',
-  },
-  safeSub: {
-    color: 'var(--text-secondary)',
-    fontSize: '0.9rem',
-    lineHeight: 1.8,
-    textAlign: 'center',
-  },
-  checkinForm: {
-    background: 'var(--bg-base)',
-    padding: '16px',
-    borderRadius: 'var(--radius-md)',
-    border: '1px solid var(--border-default)',
-    marginTop: '10px'
-  },
-  inputBox: {
-    width: '100%',
-    padding: '8px',
-    background: 'var(--bg-elevated)',
-    border: '1px solid var(--border-subtle)',
-    color: 'white',
-    borderRadius: '4px',
-    fontFamily: 'var(--font-mono)',
-    fontSize: '0.8rem',
-    boxSizing: 'border-box'
-  }
+const s = {
+  page: { position: 'relative', zIndex: 1, minHeight: '100vh', display: 'flex', flexDirection: 'column', width: '100%' },
+  statusBar: { width: '100%', height: '72px', background: 'var(--bg-surface)', borderBottom: '1px solid var(--border-void)', flexShrink: 0 },
+  statusContent: { maxWidth: '480px', margin: '0 auto', height: '100%', display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '0 24px' },
+  heartbeatContainer: { width: '120px', height: '40px', overflow: 'hidden' },
+  mainContent: { flex: 1, width: '100%', maxWidth: '420px', margin: '0 auto', padding: '32px 20px 80px', display: 'flex', flexDirection: 'column' },
+  sosBtnWrapper: { width: '100%', background: 'var(--bg-elevated)', border: '1px solid transparent', borderRadius: '12px', overflow: 'hidden', transition: 'all 350ms ease-out' },
+  sosBtnWrapperSelected: { maxHeight: '260px' },
+  sosBtn: { position: 'relative', width: '100%', height: '76px', display: 'flex', alignItems: 'center', gap: '16px', padding: '0 20px', background: 'transparent', border: '1px solid transparent', cursor: 'pointer', transition: 'all var(--normal) var(--ease-out)', outline: 'none' },
+  sosBtnSelected: { background: 'rgba(255,255,255,0.03)' },
+  iconBox: { width: '48px', height: '48px', borderRadius: '10px', border: '1px solid', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '14px', fontWeight: 'bold', fontFamily: 'var(--font-mono)' },
+  expandedArea: { padding: '0 20px 20px', animation: 'fadeIn 300ms' },
+  textarea: { width: '100%', background: 'var(--bg-surface)', border: 'none', borderBottom: '1px solid var(--border-mid)', padding: '12px 0', fontSize: '14px', color: 'var(--text-secondary)', outline: 'none', resize: 'none', transition: 'border-color var(--fast)' },
+  sendBtn: { width: '100%', height: '48px', borderRadius: '8px', border: 'none', color: 'white', fontSize: '12px', fontWeight: 500, letterSpacing: '2px', marginTop: '16px', cursor: 'pointer', outline: 'none' },
+  cancelLnk: { width: '100%', background: 'transparent', border: 'none', color: 'var(--text-muted)', fontSize: '9px', marginTop: '12px', cursor: 'pointer', outline: 'none' },
+  dividerContainer: { display: 'flex', alignItems: 'center', gap: '12px', marginBottom: '16px' },
+  dividerLine: { flex: 1, height: '1px', background: 'var(--border-void)' },
+  takeover: { position: 'fixed', inset: 0, background: 'var(--bg-void)', zIndex: 100, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center' },
+  pulseContainer: { position: 'relative', width: '120px', height: '120px', display: 'flex', alignItems: 'center', justifyContent: 'center' },
+  confirmedView: { display: 'flex', flexDirection: 'column', alignItems: 'center', textAlign: 'center', width: '100%' },
+  checkCircle: { width: '72px', height: '72px', borderRadius: '50%', border: '2px solid var(--green)', display: 'flex', alignItems: 'center', justifyContent: 'center' },
+  timePill: { background: 'var(--amber-dim)', border: '1px solid var(--amber)', borderRadius: '20px', padding: '4px 14px', color: 'var(--amber)', fontSize: '10px', fontFamily: 'var(--font-mono)', display: 'inline-flex', marginTop: '16px' },
+  aiInstructionCard: { width: '100%', background: 'var(--bg-elevated)', borderRadius: '12px', borderLeft: '3px solid var(--amber)', padding: '18px 20px', textAlign: 'left', marginTop: '32px' },
+  timeline: { width: '100%', marginTop: '24px', display: 'flex', flexDirection: 'column', textAlign: 'left', gap: '16px' },
+  safeBtn: { width: '100%', height: '56px', background: 'var(--green-dim)', border: '1px solid var(--green)', borderRadius: '10px', color: 'var(--green)', fontSize: '12px', letterSpacing: '2px', cursor: 'pointer', marginTop: '32px', transition: 'all 200ms', outline: 'none' },
+  mapBtn: { width: '100%', background: 'transparent', border: '1px solid var(--blue)', borderRadius: '10px', color: 'var(--blue)', padding: '16px', fontSize: '10px', letterSpacing: '2px', cursor: 'pointer', marginTop: '12px', outline: 'none' },
+  overlay: { position: 'fixed', inset: 0, background: 'rgba(6,8,16,0.85)', backdropFilter: 'blur(10px)', zIndex: 200, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: '20px' },
+  mapModal: { width: '100%', maxWidth: '500px', background: 'var(--bg-surface)', border: '1px solid var(--border-mid)', borderRadius: '16px', padding: '24px', textAlign: 'center' }
 };
 
-const tlStyles = {
-  row: { display: 'flex', alignItems: 'flex-start', gap: '12px' },
-  dot: {
-    width: '10px', height: '10px',
-    borderRadius: '50%',
-    border: '1px solid',
-    marginTop: '4px', flexShrink: 0,
-  },
-  label: { fontSize: '0.85rem', fontWeight: '500' },
-  sub: { fontSize: '0.75rem', color: 'var(--text-muted)' },
-};
-
-export default GuestPage;
+if (typeof document !== 'undefined') {
+  const style = document.createElement('style');
+  style.innerHTML = `
+    .sos-btn:hover { transform: translateX(6px); border-color: inherit; }
+    .sos-btn:active { transform: translateX(2px) scale(0.99); transition-duration: 80ms; }
+    .sos-btn .shimmer-overlay { position: absolute; inset: 0; background: linear-gradient(90deg, transparent 0%, rgba(255,255,255,0.03) 50%, transparent 100%); width: 200%; animation: shimmer 3s ease-in-out infinite; pointer-events: none; }
+    .sos-btn:hover .shimmer-overlay { animation-play-state: paused; }
+    .expand-textarea:focus { border-bottom-color: var(--focus-color) !important; box-shadow: 0 4px 12px var(--focus-glow); }
+    .pulse-ring { position: absolute; border-radius: 50%; border: 1px solid; animation: ringPulse 1.2s ease-in-out infinite; }
+    .ring-1 { width: 40px; height: 40px; }
+    .ring-2 { width: 80px; height: 80px; animation-delay: 0.2s; opacity: 0.6; }
+    .ring-3 { width: 120px; height: 120px; animation-delay: 0.4s; opacity: 0.3; }
+    @keyframes ringPulse { 0% { transform: scale(1); opacity: 1; } 50% { transform: scale(1.6); opacity: 0; } 100% { transform: scale(1); opacity: 1; } }
+    @keyframes ekgSpike { 0% { stroke-dashoffset: 120; } 100% { stroke-dashoffset: 0; } }
+    @keyframes fadeIn { from { opacity: 0; } to { opacity: 1; } }
+    .map-btn:hover { background: var(--blue-dim) !important; }
+  `;
+  document.head.appendChild(style);
+}

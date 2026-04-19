@@ -1,270 +1,302 @@
 import { useState, useEffect } from 'react';
+import { API } from '../hooks/useSocket';
 
-export default function AlertCard({ alert, onResolve, onAcknowledge, onDispatch }) {
-  const [progress, setProgress] = useState(0);
-  const [timeLeftStr, setTimeLeftStr] = useState('');
+export default function AlertCard({ alert, staffName, onResolve }) {
+  const [acknowledged, setAcknowledged] = useState(false);
+  const [fadeAway, setFadeAway] = useState(false);
+  const [timeAgo, setTimeAgo] = useState('');
+  const [evacPlan, setEvacPlan] = useState('');
+  const [loadingEvac, setLoadingEvac] = useState(false);
+  const [timeLeft, setTimeLeft] = useState(90);
 
-  // Maximum time for crisis bar is 120 seconds
-  const MAX_CRISIS_TIME_MS = 120000; 
-
+  // Dead man switch timer
   useEffect(() => {
-    if (alert.acknowledgedBy) {
-      setProgress(0); // Optional: clear or freeze it. Let's keep it but change color.
-      return;
+    if (alert.dispatchedTo && alert.lastPingTime) {
+      const updateTimer = () => {
+        const diffMs = Date.now() - new Date(alert.lastPingTime).getTime();
+        setTimeLeft(Math.max(0, 90 - Math.floor(diffMs / 1000)));
+      };
+      updateTimer();
+      const interval = setInterval(updateTimer, 1000);
+      return () => clearInterval(interval);
     }
+  }, [alert.dispatchedTo, alert.lastPingTime]);
 
-    const calculateProgress = () => {
-      if (!alert.createdAt) return 0;
-      const elapsed = Date.now() - alert.createdAt;
-      const percentage = Math.min(100, (elapsed / MAX_CRISIS_TIME_MS) * 100);
-      return percentage;
+  // Calculate "2m ago" relative time
+  useEffect(() => {
+    const updateTime = () => {
+      const diffMs = Date.now() - new Date(alert.timestamp).getTime();
+      const diffMins = Math.floor(diffMs / 60000);
+      if (diffMins < 1) setTimeAgo('Just now');
+      else if (diffMins < 60) setTimeAgo(`${diffMins}m ago`);
+      else setTimeAgo(`${Math.floor(diffMins/60)}h ago`);
     };
+    updateTime();
+    const timer = setInterval(updateTime, 60000);
+    return () => clearInterval(timer);
+  }, [alert.timestamp]);
 
-    setProgress(calculateProgress());
-
-    const interval = setInterval(() => {
-      setProgress(calculateProgress());
-      
-      if (alert.survivalWindowSeconds && alert.status !== 'resolved') {
-         const expiresAt = alert.createdAt + (alert.survivalWindowSeconds * 1000);
-         const diff = expiresAt - Date.now();
-         if (diff > 0) {
-             const mins = Math.floor(diff / 60000);
-             const secs = Math.floor((diff % 60000) / 1000);
-             setTimeLeftStr(`${mins} min ${secs} sec`);
-         } else {
-             setTimeLeftStr('0 sec (CRITICAL DANGER)');
-         }
-      }
-    }, 1000);
-
-    return () => clearInterval(interval);
-  }, [alert.createdAt, alert.acknowledgedBy, alert.survivalWindowSeconds, alert.status]);
-
-  const isIoT = alert.type === 'IOT_SENSOR';
-  // Compute styling traits
-  const isSevere = alert.isSevere || progress > 80 || alert.type === 'FIRE' || alert.type === 'MEDICAL';
-  const isAcknowledged = !!alert.acknowledgedBy;
-
-  let cardBg = 'var(--bg-surface)';
-  let cardBorder = 'var(--border-default)';
-  let badgeBg = 'var(--warning)';
-
-  if (alert.status === 'resolved') {
-    cardBg = 'rgba(255, 255, 255, 0.05)';
-    cardBorder = 'var(--border-subtle)';
-    badgeBg = 'var(--text-muted)';
-  } else if (alert.unresponsive) {
-    cardBg = 'rgba(255, 0, 0, 0.15)'; // Strong red for unresponsive
-    cardBorder = '#ff0000';
-    badgeBg = '#ff0000';
-  } else if (isAcknowledged) {
-    cardBg = 'rgba(0, 255, 128, 0.05)'; // slight green tint
-    cardBorder = 'var(--safe)';
-  } else if (isSevere) {
-    cardBg = 'var(--critical-bg)';
-    cardBorder = 'var(--critical)';
-  }
-
-  if (alert.status !== 'resolved') {
-    if (isIoT) badgeBg = '#8b5cf6'; // Purple for IoT
-    else if (isSevere) badgeBg = 'var(--critical)';
-  }
-
-  const styles = {
-    card: {
-      background: cardBg,
-      border: `1px solid ${cardBorder}`,
-      borderRadius: 'var(--radius-lg)',
-      padding: '20px',
-      marginBottom: '16px',
-      position: 'relative',
-      overflow: 'hidden',
-      animation: 'fadeUp 0.3s ease',
-      transition: 'all 0.3s ease',
-    },
-    header: { display: 'flex', justifyContent: 'space-between', marginBottom: '12px', alignItems: 'center' },
-    typeBadge: {
-      padding: '4px 8px',
-      borderRadius: '4px',
-      background: badgeBg,
-      color: '#fff',
-      fontSize: '0.8rem',
-      fontWeight: 'bold',
-      letterSpacing: '1px'
-    },
-    time: { color: 'var(--text-muted)', fontSize: '0.8rem' },
-    message: { fontFamily: 'var(--font-body)', fontSize: '1rem', marginBottom: '16px', color: 'var(--text-primary)' },
-    footer: { display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginTop: '14px' },
-    location: { fontFamily: 'var(--font-mono)', fontSize: '0.75rem', color: 'var(--text-secondary)' },
-    btnGroup: { display: 'flex', gap: '8px' },
-    resolveBtn: {
-      background: 'transparent',
-      border: '1px solid var(--text-muted)',
-      color: 'var(--text-primary)',
-      padding: '6px 12px',
-      cursor: 'pointer',
-      borderRadius: 'var(--radius-sm)',
-      fontFamily: 'var(--font-mono)',
-      fontSize: '0.75rem',
-      transition: 'var(--transition)'
-    },
-    ackBtn: {
-      background: 'var(--warning)',
-      border: 'none',
-      color: 'black',
-      padding: '6px 12px',
-      cursor: 'pointer',
-      borderRadius: 'var(--radius-sm)',
-      fontFamily: 'var(--font-mono)',
-      fontSize: '0.75rem',
-      fontWeight: 'bold',
-      transition: 'var(--transition)'
-    },
-    ackText: {
-      color: 'var(--safe)',
-      fontFamily: 'var(--font-mono)',
-      fontSize: '0.75rem',
-      fontWeight: 'bold'
-    },
-    dispatchBtn: {
-      background: 'transparent',
-      border: '1px solid currentColor',
-      color: 'var(--info, #3b82f6)',
-      padding: '6px 12px',
-      cursor: 'pointer',
-      borderRadius: 'var(--radius-sm)',
-      fontFamily: 'var(--font-mono)',
-      fontSize: '0.75rem',
-      fontWeight: 'bold',
-      transition: 'var(--transition)'
-    },
-    unresponsiveBadge: {
-      color: '#ff0000',
-      fontFamily: 'var(--font-mono)',
-      fontSize: '0.75rem',
-      fontWeight: 'bold',
-      animation: 'blink 1s infinite'
-    },
-    progressBarContainer: {
-      height: '4px',
-      background: 'rgba(255,255,255,0.1)',
-      width: '100%',
-      position: 'absolute',
-      bottom: 0,
-      left: 0,
-    },
-    progressBar: {
-      height: '100%',
-      width: `${progress}%`,
-      background: isAcknowledged ? 'var(--safe)' : isSevere ? 'var(--critical)' : 'var(--warning)',
-      transition: 'width 1s linear, background 0.3s ease',
-    },
-    triangulationBox: {
-      background: 'rgba(0,0,0,0.2)',
-      border: `1px solid ${alert.triangulation?.isContradictory ? 'var(--critical)' : 'var(--safe)'}`,
-      borderRadius: 'var(--radius-md)',
-      padding: '10px',
-      marginBottom: '16px'
-    },
-    survivalBox: {
-      marginBottom: '16px',
-      padding: '8px',
-      background: 'rgba(255,0,0,0.1)',
-      borderLeft: '4px solid var(--critical)',
-      borderRadius: '4px'
+  const handleAcknowledge = async () => {
+    try {
+      await fetch(`${API}/api/resolve-alert`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ id: alert.id, staffName: staffName || 'Staff' })
+      });
+      setFadeAway(true);
+      setTimeout(() => setAcknowledged(true), 200);
+      onResolve();
+    } catch (e) {
+      console.error(e);
     }
   };
 
-  return (
-    <div style={styles.card}>
-      <div style={styles.header}>
-        <div style={{display: 'flex', gap: '10px', alignItems: 'center'}}>
-          <div style={styles.typeBadge} className="display">{alert.type}</div>
-          {alert.isSevere && !isAcknowledged && <span style={{fontSize:'0.7rem', color:'var(--critical)', fontWeight:'bold'}}>CRITICAL</span>}
+  const handleDispatch = async () => {
+    try {
+      await fetch(`${API}/api/alerts/dispatch`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ id: alert.id, staffName: staffName || 'Staff' })
+      });
+      onResolve();
+    } catch (e) {
+      console.error(e);
+    }
+  };
+
+  const handlePing = async () => {
+    try {
+      await fetch(`${API}/api/alerts/ping`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ id: alert.id, staffName: staffName || 'Staff' })
+      });
+      onResolve();
+    } catch (e) {
+      console.error(e);
+    }
+  };
+
+  const handleAIEvacuation = async () => {
+    setLoadingEvac(true);
+    try {
+      const res = await fetch(`${API}/api/intelligence/evacuation`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ hotelId: alert.hotelId, incidentDetails: `${alert.type} at ${alert.location}: ${alert.message || ''}` })
+      });
+      const data = await res.json();
+      if (data.success) {
+        setEvacPlan(data.instruction);
+      }
+    } catch (e) {
+      console.error(e);
+    }
+    setLoadingEvac(false);
+  };
+
+  const handleBroadcast = async () => {
+    try {
+      await fetch(`${API}/api/alerts/mass-prompt`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ hotelId: alert.hotelId, message: evacPlan, severity: 'critical' })
+      });
+      alert('Broadcast transmitted to all guests in the building.');
+    } catch (e) {
+      console.error(e);
+    }
+  };
+
+  const isSilent = alert.type === 'SECURITY (SILENT)' || alert.isSilent;
+  const isCritical = alert.isSevere;
+  const isUnresponsive = alert.unresponsive || (alert.dispatchedTo && alert.lastPingTime && timeLeft === 0);
+  const colorVar = `var(--${alert.type === 'FIRE' ? 'red' : alert.type === 'MEDICAL' ? 'amber' : alert.type === 'SECURITY' ? 'blue' : 'purple'})`;
+  const dimVar = `var(--${alert.type === 'FIRE' ? 'red' : alert.type === 'MEDICAL' ? 'amber' : alert.type === 'SECURITY' ? 'blue' : 'purple'}-dim)`;
+
+  if (isSilent) {
+    return (
+      <div style={s.silentCard}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: '6px', marginBottom: '8px' }}>
+          <div style={{ width: '4px', height: '4px', borderRadius: '50%', background: 'var(--purple)' }} />
+          <span className="font-mono" style={{ fontSize: '8px', color: 'var(--purple)', letterSpacing: '2px' }}>WELFARE CHECK</span>
         </div>
-        <div style={styles.time} className="mono">{alert.time}</div>
+        <div className="font-body" style={{ fontSize: '13px', color: 'var(--text-secondary)' }}>
+          Silent alert triggered in {alert.location}. Please conduct a discreet welfare check.
+        </div>
+        {!acknowledged && (
+          <button onClick={handleAcknowledge} style={{...s.ackBtn, marginTop: '12px'}}>
+            Acknowledge
+          </button>
+        )}
       </div>
-      <p style={styles.message}>"{alert.message || 'No additional details provided by guest.'}"</p>
+    );
+  }
+
+  return (
+    <div className="alert-card-entrance" style={{
+      ...s.card, 
+      ...(isCritical && !acknowledged ? s.criticalCard : {}),
+      ...(isUnresponsive && !acknowledged ? s.unresponsiveCard : {}),
+      ...(acknowledged ? s.ackedCard : {})
+    }}>
+      {isCritical && !acknowledged && <div className="shimmer-sweep" style={{ animationDuration: '3s', animationDelay: '5s' }} />}
       
-      {alert.triangulation && (
-        <div style={styles.triangulationBox}>
-            <div style={{display:'flex', justifyContent:'space-between', marginBottom:'6px'}}>
-               <span className="mono" style={{fontSize:'0.7rem', color: alert.triangulation.isContradictory ? 'var(--critical)' : 'var(--safe)', fontWeight:'bold'}}>
-                  {alert.triangulation.isContradictory ? '⚠️ CONTRADICTION DETECTED: Verify Before Evacuation' : '✓ CORROBORATED REPORT'}
-               </span>
-               <span className="mono" style={{fontSize:'0.7rem', color: 'var(--text-primary)'}}>
-                  Score: {alert.triangulation.confidenceScore}%
-               </span>
-            </div>
-            <p style={{fontFamily:'var(--font-body)', fontSize:'0.8rem', color:'var(--text-secondary)', margin:0}}>{alert.triangulation.analysis}</p>
+      {/* Top Row */}
+      <div style={s.topRow}>
+        <div style={{...s.badgePill, background: dimVar, borderColor: colorVar}}>
+          {isCritical && !acknowledged && <div className="badge-breathe" style={{ position: 'absolute', inset: 0, borderRadius: '20px' }} />}
+          <span className="font-mono" style={{ fontSize: '9px', fontWeight: 'bold', color: colorVar }}>LEVEL {isCritical ? '5' : '3'}</span>
+          <span className="font-mono" style={{ fontSize: '9px', fontWeight: 'bold', color: colorVar }}>·</span>
+          <span className="font-mono" style={{ fontSize: '9px', fontWeight: 'bold', color: colorVar }}>{alert.type}</span>
+        </div>
+        
+        <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+          <span className="font-mono" style={{ fontSize: '9px', color: 'var(--text-muted)' }}>
+            {new Date(alert.timestamp).toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'})} ({timeAgo})
+          </span>
+          <div style={{ width: '1px', height: '10px', background: 'var(--border-dim)' }} />
+          <span className="font-mono" style={{ fontSize: '9px', color: 'var(--text-secondary)' }}>{alert.location || 'Unknown Area'}</span>
+        </div>
+      </div>
+
+      <div style={s.divider} />
+
+      {/* Body */}
+      <div>
+        <div className="font-mono" style={{ fontSize: '7.5px', color: 'var(--text-muted)', letterSpacing: '2px', marginBottom: '6px' }}>
+          TRANSLATED SUMMARY
+        </div>
+        <div className="font-body" style={{ fontSize: '14px', color: 'var(--text-primary)', lineHeight: 1.65 }}>
+          {alert.aiSummary || alert.rawMessage}
+          {alert.language && alert.language !== 'en' && (
+            <span className="font-mono" style={s.transBadge}>
+              {alert.language.toUpperCase()} → EN
+            </span>
+          )}
+        </div>
+      </div>
+
+      {/* Staff Instruction */}
+      {!acknowledged && alert.staffInstruction && (
+        <div style={s.instructionBox}>
+          <div className="font-mono" style={{ fontSize: '7.5px', color: 'var(--amber)', letterSpacing: '2px', marginBottom: '4px' }}>STAFF ACTION</div>
+          <div className="font-body" style={{ fontSize: '13px', color: 'var(--text-secondary)', lineHeight: 1.5 }}>
+            {alert.staffInstruction}
+          </div>
         </div>
       )}
 
-      {alert.survivalWindowSeconds && alert.status !== 'resolved' && (
-        <div style={styles.survivalBox}>
-          <span className="mono" style={{color: 'var(--critical)', fontSize:'0.75rem', fontWeight:'bold', animation:'blink 1s infinite'}}>
-            ESTIMATED SAFE WINDOW: {timeLeftStr}
+      {/* AI Evacuation Plan */}
+      {evacPlan && (
+        <div style={{ marginTop: '12px', background: 'var(--blue-dim)', borderLeft: '2px solid var(--blue)', padding: '10px 14px', borderRadius: '0 8px 8px 0' }}>
+          <div className="font-mono" style={{ fontSize: '7.5px', color: 'var(--blue)', letterSpacing: '2px', marginBottom: '4px' }}>AI EVACUATION PLAN</div>
+          <div className="font-body" style={{ fontSize: '13px', color: 'var(--text-secondary)', lineHeight: 1.5 }}>
+            {evacPlan}
+          </div>
+          <button 
+            className="font-mono hover-link" 
+            onClick={handleBroadcast}
+            style={{ background: 'transparent', border: '1px solid var(--blue)', borderRadius: '6px', fontSize: '9px', color: 'var(--blue)', padding: '6px 12px', marginTop: '10px', cursor: 'pointer' }}
+          >
+            BROADCAST TO ALL GUESTS
+          </button>
+        </div>
+      )}
+
+      {/* Bottom Row */}
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginTop: '14px', flexWrap: 'wrap', gap: '8px' }}>
+        <div style={{ height: '28px', display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap' }}>
+          {!acknowledged ? (
+            <button 
+              className="font-mono ack-btn" 
+              onClick={handleAcknowledge}
+              style={{...s.ackBtn, ...(fadeAway ? s.ackBtnFade : {})}}
+            >
+              Resolve
+            </button>
+          ) : (
+            <div className="font-mono fade-in-text" style={{ fontSize: '10px', color: 'var(--green)' }}>✓ Resolved</div>
+          )}
+
+          {!acknowledged && !alert.dispatchedTo && (
+            <button 
+              className="font-mono ack-btn" 
+              onClick={handleDispatch}
+              style={{...s.ackBtn, borderColor: 'var(--amber)', color: 'var(--amber)'}}
+            >
+              Dispatch Me
+            </button>
+          )}
+
+          {!acknowledged && isUnresponsive && (
+            <div className="font-mono" style={{ color: 'var(--red)', fontSize: '10px', padding: '6px 12px', background: 'var(--red-dim)', border: '1px solid var(--red)', borderRadius: '6px', fontWeight: 'bold' }}>
+              STAFF INACTIVE — SEND BACKUP
+            </div>
+          )}
+
+          {!acknowledged && alert.dispatchedTo === staffName && !isUnresponsive && (
+            <button 
+              className="font-mono ack-btn" 
+              onClick={handlePing}
+              style={{...s.ackBtn, background: timeLeft < 15 ? 'var(--red-dim)' : 'var(--amber-dim)', borderColor: timeLeft < 15 ? 'var(--red)' : 'var(--amber)', color: timeLeft < 15 ? 'var(--red)' : 'var(--amber)'}}
+            >
+              PING OK ({timeLeft}s)
+            </button>
+          )}
+
+          {!acknowledged && alert.dispatchedTo && alert.dispatchedTo !== staffName && !isUnresponsive && (
+            <span className="font-mono" style={{ fontSize: '9px', color: 'var(--text-muted)' }}>
+              Dispatched: {alert.dispatchedTo}
+            </span>
+          )}
+        </div>
+        
+        <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
+          {!evacPlan && (
+            <button 
+              className="font-mono hover-link" 
+              onClick={handleAIEvacuation}
+              disabled={loadingEvac}
+              style={{ background: 'transparent', border: 'none', fontSize: '9px', color: 'var(--blue)', cursor: loadingEvac ? 'not-allowed' : 'pointer', opacity: loadingEvac ? 0.5 : 1 }}
+            >
+              {loadingEvac ? 'Generating...' : 'AI Evac Plan ✨'}
+            </button>
+          )}
+          <span className="font-mono hover-link" style={{ fontSize: '9px', color: 'var(--text-muted)', cursor: 'pointer' }}>
+            View on map →
           </span>
         </div>
-      )}
-
-      <div style={styles.footer}>
-        <div style={styles.location}>📍 {alert.location} | ID: {alert.guestId}</div>
-        <div style={styles.btnGroup}>
-          {!isAcknowledged && alert.status !== 'resolved' && (
-            <button 
-              style={styles.ackBtn} 
-              onClick={() => onAcknowledge && onAcknowledge(alert.id)}
-            >
-              TAKE RESPONSIBILITY
-            </button>
-          )}
-
-          {alert.status !== 'resolved' && isAcknowledged && !alert.dispatchedTo && (
-            <button 
-              style={styles.dispatchBtn} 
-              onClick={() => onDispatch && onDispatch(alert.id)}
-            >
-              🚀 DISPATCH ME
-            </button>
-          )}
-
-          {alert.status !== 'resolved' && alert.unresponsive && (
-            <span style={styles.unresponsiveBadge}>⚠️ {alert.dispatchedTo} UNRESPONSIVE</span>
-          )}
-
-          {alert.status !== 'resolved' && isAcknowledged && alert.dispatchedTo && !alert.unresponsive && (
-            <span style={styles.ackText}>✓ {alert.dispatchedTo} deployed</span>
-          )}
-          
-          {alert.status !== 'resolved' && isAcknowledged && !alert.dispatchedTo && (
-            <span style={{...styles.ackText, color: 'var(--text-muted)'}}>ack by {alert.acknowledgedBy}</span>
-          )}
-
-          {alert.status === 'resolved' && (
-            <span style={{...styles.ackText, color: 'var(--text-muted)'}}>✓ resolved by {alert.resolvedBy || alert.acknowledgedBy || 'Staff'}</span>
-          )}
-          
-          {alert.status !== 'resolved' && (
-            <button 
-              style={styles.resolveBtn} 
-              onClick={() => onResolve(alert.id)}
-              onMouseEnter={(e) => { e.target.style.background = 'var(--text-primary)'; e.target.style.color = 'var(--bg-base)'; }}
-              onMouseLeave={(e) => { e.target.style.background = 'transparent'; e.target.style.color = 'var(--text-primary)'; }}
-            >
-              RESOLVE
-            </button>
-          )}
-        </div>
       </div>
-
-      {/* Crisis Bar */}
-      {alert.status !== 'resolved' && (
-      <div style={styles.progressBarContainer}>
-        <div style={styles.progressBar}></div>
-      </div>
-      )}
     </div>
   );
+}
+
+const s = {
+  card: { position: 'relative', overflow: 'hidden', background: 'var(--bg-elevated)', borderRadius: '14px', border: '1px solid var(--border-dim)', padding: '18px', marginBottom: '12px', transition: 'all 300ms ease' },
+  criticalCard: { borderColor: 'var(--red)', boxShadow: '0 0 0 1px var(--red-dim), 0 8px 32px rgba(255,58,74,0.12)' },
+  unresponsiveCard: { borderColor: 'var(--red)', boxShadow: '0 0 0 2px var(--red)', animation: 'cardFlash 1.5s ease-in-out infinite' },
+  ackedCard: { opacity: 0.65, borderColor: 'var(--border-dim)', boxShadow: 'none' },
+  topRow: { display: 'flex', justifyContent: 'space-between', alignItems: 'center' },
+  badgePill: { position: 'relative', border: '1px solid', borderRadius: '20px', padding: '3px 10px', display: 'flex', alignItems: 'center', gap: '6px' },
+  divider: { width: '100%', height: '1px', background: 'var(--border-void)', margin: '12px 0' },
+  transBadge: { background: 'var(--purple-dim)', border: '1px solid var(--purple)', borderRadius: '4px', padding: '1px 6px', color: 'var(--purple)', fontSize: '8px', marginLeft: '8px', display: 'inline-block', verticalAlign: 'middle' },
+  instructionBox: { marginTop: '12px', background: 'var(--bg-surface)', borderLeft: '2px solid var(--amber)', borderRadius: '0 8px 8px 0', padding: '10px 14px' },
+  ackBtn: { background: 'transparent', border: '1px solid var(--border-mid)', borderRadius: '6px', padding: '6px 16px', color: 'var(--text-muted)', fontSize: '10px', letterSpacing: '1.5px', cursor: 'pointer', transition: 'all var(--fast)', outline: 'none' },
+  ackBtnFade: { opacity: 0, transform: 'scale(0.8)' },
+  silentCard: { background: 'var(--bg-surface)', border: '1px solid var(--purple)', borderRadius: '12px', padding: '14px 18px', marginBottom: '12px' }
+};
+
+if (typeof document !== 'undefined') {
+  const style = document.createElement('style');
+  style.innerHTML = `
+    .alert-card-entrance { animation: cardEntrance 400ms var(--ease-out) backwards; }
+    @keyframes cardEntrance { from { opacity: 0; transform: translateY(-16px) scale(0.98); } to { opacity: 1; transform: translateY(0) scale(1); } }
+    @keyframes cardFlash { 0% { box-shadow: 0 0 0 2px var(--red), 0 8px 32px rgba(255,58,74,0.12); } 50% { box-shadow: 0 0 0 6px rgba(255,58,74,0.4), 0 8px 32px rgba(255,58,74,0.3); } 100% { box-shadow: 0 0 0 2px var(--red), 0 8px 32px rgba(255,58,74,0.12); } }
+    .ack-btn:hover { border-color: var(--green) !important; color: var(--green) !important; background: var(--green-dim) !important; }
+    .badge-breathe { animation: badge-breathe 2s ease-in-out infinite; }
+    .fade-in-text { animation: fadeIn 300ms ease-out forwards; }
+    .hover-link:hover { color: var(--blue) !important; }
+  `;
+  document.head.appendChild(style);
 }

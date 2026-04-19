@@ -1,371 +1,346 @@
 import { useState, useEffect } from 'react';
-import LiveBadge from '../components/LiveBadge';
-import AlertCard from '../components/AlertCard';
-import HeadcountPanel from '../components/HeadcountPanel';
-import PredictionPanel from '../components/PredictionPanel';
-import { useSocket, API } from '../hooks/useSocket';
 import { useAuth } from '../context/AuthContext';
+import { API, useSocket } from '../hooks/useSocket';
+import AlertCard from '../components/AlertCard';
 
 export default function StaffPage() {
   const { user } = useAuth();
   const { socket, connected } = useSocket(user?.hotelId);
   const [alerts, setAlerts] = useState([]);
+  const [filter, setFilter] = useState('All');
+  
+  const [totalGuests] = useState(142); // Hardcoded mock capacity
   const [safeGuests, setSafeGuests] = useState([]);
+  
+  const safeCount = safeGuests.length;
+  // Calculate unique in-danger guests by active alerts
+  const inDangerCount = new Set(alerts.filter(a => a.status !== 'resolved').map(a => a.guestId || a.id)).size;
+  const unaccountedCount = Math.max(0, totalGuests - safeCount - inDangerCount);
 
-  // Evacuation Draft State
-  const [showEvacModal, setShowEvacModal] = useState(false);
-  const [incidentDetails, setIncidentDetails] = useState('');
-  const [aiDraft, setAiDraft] = useState('');
-  const [drafting, setDrafting] = useState(false);
 
-  // Dead Man Switch State
-  const [activeDispatchId, setActiveDispatchId] = useState(null);
-  const [timeLeft, setTimeLeft] = useState(90);
-
-  // Fetch initial data
-  useEffect(() => {
-    if (!user?.hotelId) return;
-    
-    fetch(`${API}/api/alerts?hotelId=${user.hotelId}`)
-      .then(res => res.json())
-      .then(data => {
-        if (Array.isArray(data)) {
-          setAlerts(data);
-        } else {
-          setAlerts([]);
-        }
-      })
-      .catch(err => console.error("Could not fetch initial alerts", err));
-  }, [user]);
-
-  // Socket listeners
-  useEffect(() => {
-    if (!socket) return;
-
-    const handleNewAlert = (newAlert) => {
-      setAlerts(prev => [newAlert, ...prev]);
-    };
-
-    const handleAlertUpdated = (updatedAlert) => {
-      setAlerts(prev => prev.map(a => a.id === updatedAlert.id ? updatedAlert : a));
-      if (updatedAlert.status === 'resolved') {
-        setSafeGuests([]);
-      }
-    };
-
-    const handleCriticalityEscalated = (data) => {
-      setAlerts(prev => prev.map(a => a.type === data.type ? { ...a, isSevere: true } : a));
-    };
-
-    const handleGuestSafe = (data) => {
-      setSafeGuests(prev => [...prev, data]);
-    };
-
-    socket.on('new_alert', handleNewAlert);
-    socket.on('alert_updated', handleAlertUpdated);
-    socket.on('criticality_escalated', handleCriticalityEscalated);
-    socket.on('guest_safe', handleGuestSafe);
-
-    return () => {
-      socket.off('new_alert', handleNewAlert);
-      socket.off('alert_updated', handleAlertUpdated);
-      socket.off('criticality_escalated', handleCriticalityEscalated);
-      socket.off('guest_safe', handleGuestSafe);
-    };
-  }, [socket, activeDispatchId, user?.name]);
-
-  useEffect(() => {
-    if (!activeDispatchId) return;
-    const interval = setInterval(() => {
-      setTimeLeft(prev => prev > 0 ? prev - 1 : 0);
-    }, 1000);
-    return () => clearInterval(interval);
-  }, [activeDispatchId]);
-
-  const handleResolve = async (id) => {
+  const fetchAlerts = async () => {
+    if (!user) return;
     try {
-      await fetch(`${API}/api/resolve-alert`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ id, staffName: user?.name || 'Staff' })
-      });
-      // Updating will happen via socket 'alert_updated'
-    } catch (err) {
-      console.error(err);
-    }
-  };
-
-  const handleAcknowledge = async (id) => {
-    try {
-      await fetch(`${API}/api/alerts/acknowledge`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ id, staffName: user?.name || 'Staff' })
-      });
-      // Updating will happen via socket 'alert_updated'
-    } catch (err) {
-      console.error(err);
-    }
-  };
-
-  const handleDispatch = async (id) => {
-    try {
-      await fetch(`${API}/api/alerts/dispatch`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ id, staffName: user?.name || 'Staff' })
-      });
-      setActiveDispatchId(id);
-      setTimeLeft(90);
-    } catch (err) {
-      console.error(err);
-    }
-  };
-
-  const handlePingAlive = async () => {
-    if (!activeDispatchId) return;
-    try {
-      await fetch(`${API}/api/alerts/ping`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ id: activeDispatchId, staffName: user?.name || 'Staff' })
-      });
-      setTimeLeft(90);
-    } catch (err) {
-      console.error(err);
-    }
-  };
-
-  const handleTriggerIoT = async () => {
-    try {
-      await fetch(`${API}/api/iot/sensor`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ 
-          hotelId: user.hotelId, 
-          sensorType: 'HEAT', 
-          reading: 85, 
-          threshold: 60,
-          location: 'Kitchen Area'
-        })
-      });
-    } catch (err) {
-      console.error(err);
-    }
-  };
-
-  const handleGenerateAI = async () => {
-    if (!incidentDetails) return;
-    setDrafting(true);
-    try {
-      const res = await fetch(`${API}/api/intelligence/evacuation`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ hotelId: user.hotelId, incidentDetails })
-      });
+      const res = await fetch(`${API}/api/alerts?hotelId=${user.hotelId}`);
       const data = await res.json();
-      if (data.success) {
-        setAiDraft(data.instruction);
-      } else {
-        setAiDraft(`[AI ERROR] ${data.message}. Please input manual instructions.`);
-      }
-    } catch (err) {
-      setAiDraft("[AI ERROR] Failed to connect to intelligence server. Please command manually.");
+      setAlerts(data);
+    } catch (e) {
+      console.error(e);
     }
-    setDrafting(false);
   };
 
-  const handleBroadcast = async () => {
-    if (!aiDraft) return;
-    try {
-      await fetch(`${API}/api/alerts/mass-prompt`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ hotelId: user.hotelId, message: aiDraft })
+  useEffect(() => {
+    fetchAlerts();
+    if (!socket) return;
+    
+    const handleGuestSafe = (data) => {
+      setSafeGuests(prev => {
+        if (!prev.find(g => g.guestId === data.guestId)) return [...prev, data];
+        return prev;
       });
-      setShowEvacModal(false);
-      setIncidentDetails('');
-      setAiDraft('');
-      // Optional: show a quick success toast
-    } catch (err) {
-      console.error(err);
-    }
-  };
+    };
+
+    socket.on('new_alert', fetchAlerts);
+    socket.on('alert_updated', fetchAlerts);
+    socket.on('guest_safe', handleGuestSafe);
+    
+    return () => { 
+      socket.off('new_alert', fetchAlerts);
+      socket.off('alert_updated', fetchAlerts); 
+      socket.off('guest_safe', handleGuestSafe); 
+    };
+  }, [socket]);
+
+  // Tab Title
+  useEffect(() => {
+    if (!connected) document.title = "⚠ Offline — Aura";
+    else if (alerts.filter(a => a.status !== 'resolved').length > 0) document.title = `🔴 [${alerts.filter(a => a.status !== 'resolved').length}] Alert — Aura Command`;
+    else document.title = "Aura · Monitoring";
+  }, [alerts, connected]);
+
+  const activeAlerts = alerts.filter(a => filter === 'All' || a.type === filter);
+  const realActiveAlertsCount = alerts.filter(a => a.status !== 'resolved').length;
+  const hasAlerts = activeAlerts.length > 0;
+  
+  // Dynamic Risk Score
+  let riskScore = 12; // Base
+  if (realActiveAlertsCount > 0) riskScore += 25 * realActiveAlertsCount;
+  if (unaccountedCount > 0 && realActiveAlertsCount > 0) riskScore += Math.min(8 * unaccountedCount, 40);
+  riskScore = Math.min(riskScore, 98); // Max cap
+  const isElevated = riskScore > 12;
 
   return (
-    <div style={styles.page}>
+    <div style={s.page}>
       
-      {/* HEADER */}
-      <div style={styles.header}>
-        <div>
-          <h1 className="display" style={styles.title}>COMMAND CENTER</h1>
-          <p className="mono" style={styles.subtitle}>AURA PROTOCOL SECURE OVERVIEW — {user?.hotelName?.toUpperCase()}</p>
+      {/* FIXED NAVBAR */}
+      <div style={s.navbar}>
+        {/* Left Zone */}
+        <div style={s.navLeft}>
+          <span style={{ color: 'var(--system)', fontSize: '10px' }}>◆</span>
+          <span className="font-display" style={{ fontSize: '20px', color: 'var(--text-primary)', letterSpacing: '4px' }}>AURA</span>
+          <div style={s.navDivider} />
+          <span className="font-mono" style={{ fontSize: '9px', color: 'var(--text-muted)', letterSpacing: '2px' }}>COMMAND CENTER</span>
+          <div style={s.navDivider} />
+          <span className="font-mono" style={{ fontSize: '9px', color: 'var(--text-muted)' }}>GRAND AURA HOTEL · FLOOR 4</span>
         </div>
-        <div style={{display: 'flex', gap: '16px', alignItems: 'center'}}>
-          <button 
-            style={styles.iotBtn} 
-            className="mono" 
-            onClick={handleTriggerIoT}
-          >
-            🧪 TRIGGER IOT HEAT
-          </button>
-          <button 
-            style={styles.evacBtn} 
-            className="mono" 
-            onClick={() => setShowEvacModal(true)}
-          >
-            ⚠️ DRAFT EVACUATION
-          </button>
-          <LiveBadge connected={connected} />
+
+        {/* Center Zone */}
+        <div style={s.navCenter}>
+          <div style={s.statPill}>
+            <div style={{ width: '4px', height: '4px', borderRadius: '50%', background: 'var(--text-muted)' }} />
+            <span className="font-mono stat-num" style={{ color: 'var(--text-muted)' }}>142</span>
+            <span className="font-mono" style={{ fontSize: '8px', color: 'var(--text-muted)', letterSpacing: '1px' }}>GUESTS</span>
+          </div>
+          <div style={s.statPill}>
+            <div style={{ width: '4px', height: '4px', borderRadius: '50%', background: 'var(--green)', animation: safeCount > 0 ? 'blink 1s infinite' : 'none' }} />
+            <span className="font-mono stat-num" style={{ color: 'var(--green)' }} key={safeCount}>{safeCount}</span>
+            <span className="font-mono" style={{ fontSize: '8px', color: 'var(--text-muted)', letterSpacing: '1px' }}>SAFE</span>
+          </div>
+          <div style={s.statPill}>
+            <div style={{ width: '4px', height: '4px', borderRadius: '50%', background: 'var(--red)', animation: alerts.length > 0 ? 'blink 1s infinite' : 'none' }} />
+            <span className="font-mono stat-num" style={{ color: 'var(--red)' }} key={alerts.length}>{alerts.length}</span>
+            <span className="font-mono" style={{ fontSize: '8px', color: 'var(--text-muted)', letterSpacing: '1px' }}>ALERTS</span>
+          </div>
+        </div>
+
+        {/* Right Zone */}
+        <div style={s.navRight}>
+          <Clock />
+          <div style={s.navDivider} />
+          <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+            <div style={{ width: '6px', height: '6px', borderRadius: '50%', background: connected ? 'var(--green)' : 'var(--red)', animation: 'blink 2s infinite' }} />
+            <span className="font-mono" style={{ fontSize: '9px', color: connected ? 'var(--green)' : 'var(--red)' }}>
+              {connected ? 'LIVE' : 'OFFLINE'}
+            </span>
+          </div>
         </div>
       </div>
 
-      {/* DASHBOARD GRID */}
-      <div style={styles.grid}>
+      {/* MAIN 3-COLUMN LAYOUT */}
+      <div style={s.mainLayout}>
         
-        {/* LEFT COLUMN: Insights & Intel */}
-        <div style={styles.colLeft}>
-          <HeadcountPanel safeGuests={safeGuests} />
-          <PredictionPanel alerts={alerts} />
-        </div>
-
-        {/* RIGHT COLUMN: The Live Feed */}
-        <div style={styles.colRight}>
-          <div style={styles.feedHeader}>
-            <span className="mono">LIVE INCIDENT FEED</span>
-            <span className="mono" style={{color: 'var(--text-muted)'}}>{alerts.filter(a => a.status !== 'resolved').length} ACTIVE</span>
-          </div>
-          
-          <div style={styles.feed}>
-            {alerts.filter(a => a.status !== 'resolved').length === 0 ? (
-              <div style={styles.emptyState} className="mono">NO ACTIVE INCIDENTS. SYSTEM NOMINAL.</div>
-            ) : (
-              alerts.filter(a => a.status !== 'resolved').map(a => (
-                <AlertCard key={a.id} alert={a} onResolve={handleResolve} onAcknowledge={handleAcknowledge} onDispatch={handleDispatch} />
-              ))
-            )}
+        {/* LEFT COLUMN: CONTEXT */}
+        <div style={s.leftCol}>
+          <div className="font-mono" style={s.sectionLabel}>BUILDING STATUS</div>
+          <div style={s.buildingStatus}>
+            {['F5', 'F4', 'F3', 'F2', 'F1'].map((floor) => {
+              const isAlert = alerts.some(a => a.location?.includes(floor));
+              const isCurrent = floor === 'F4';
+              return (
+                <div key={floor} style={{...s.floorBar, ...(isAlert ? s.floorAlert : {}), ...(isCurrent && !isAlert ? s.floorCurrent : {})}}>
+                  <span className="font-mono" style={{ fontSize: '9px', color: 'var(--text-muted)' }}>{floor}</span>
+                  <div style={{ width: '6px', height: '6px', borderRadius: '50%', background: isAlert ? 'var(--red)' : 'var(--green)', opacity: isAlert ? 1 : 0.4, animation: isAlert ? 'blink 1s infinite' : 'none' }} />
+                </div>
+              );
+            })}
+            <div className="font-mono" style={{ fontSize: '8px', color: 'var(--text-muted)', marginTop: '8px' }}>◉ ALERT  ○ CLEAR</div>
           </div>
 
-          <div style={{...styles.feedHeader, marginTop: '40px'}}>
-            <span className="mono">PAST EMERGENCIES (LAST 2 HOURS)</span>
-            <span className="mono" style={{color: 'var(--text-muted)'}}>{alerts.filter(a => a.status === 'resolved').length} RESOLVED</span>
+          <div style={s.colDivider} />
+
+          <div className="font-mono" style={s.sectionLabel}>ACTIVE STAFF</div>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: '4px', padding: '0 16px' }}>
+            <StaffMember initials="AK" name="Aditya K." role="Security" status="amber" />
+            <StaffMember initials="SR" name="Sarah R." role="Medical" status="green" />
+            <StaffMember initials="MJ" name="Mark J." role="Manager" status="green" />
           </div>
-          
-          <div style={{...styles.feed, opacity: 0.7}}>
-            {alerts.filter(a => a.status === 'resolved').length === 0 ? (
-              <div style={styles.emptyState} className="mono">NO RECENT RESOLVED INCIDENTS.</div>
-            ) : (
-              alerts.filter(a => a.status === 'resolved').map(a => (
-                <AlertCard key={a.id} alert={a} onResolve={handleResolve} onAcknowledge={handleAcknowledge} onDispatch={handleDispatch} />
-              ))
-            )}
+
+          <div style={s.colDivider} />
+
+          <div className="font-mono" style={s.sectionLabel}>QUICK SIMULATE</div>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: '8px', padding: '0 16px' }}>
+            <SimulateBtn icon="F" label="Fire Alert" color="var(--red)" onTrigger={() => simulateAlert('FIRE', 'Simulated fire reported')} />
+            <SimulateBtn icon="M" label="Medical" color="var(--amber)" onTrigger={() => simulateAlert('MEDICAL', 'Simulated medical emergency')} />
+            <SimulateBtn icon="S" label="Security" color="var(--blue)" onTrigger={() => simulateAlert('SECURITY', 'Simulated security threat')} />
           </div>
         </div>
 
-      </div>
+        {/* CENTER COLUMN: FEED */}
+        <div style={s.centerCol}>
+          <div style={s.feedTopBar}>
+            <span className="font-mono" style={{ fontSize: '9px', color: 'var(--text-muted)', letterSpacing: '2px' }}>ACTIVE INCIDENTS</span>
+            <div style={{ display: 'flex', gap: '12px' }}>
+              {['All', 'FIRE', 'MEDICAL', 'SECURITY'].map(f => (
+                <button key={f} onClick={() => setFilter(f)} className="font-mono filter-tab" style={{...s.filterTab, ...(filter === f ? s.filterTabActive : {})}}>
+                  {f === 'All' ? 'All' : f.charAt(0) + f.substring(1).toLowerCase()}
+                </button>
+              ))}
+            </div>
+          </div>
 
-      {/* EVACUATION MODAL OVERLAY */}
-      {showEvacModal && (
-        <div style={styles.modalBackdrop}>
-          <div style={styles.modal}>
-            <div style={styles.modalHeader}>
-              <h2 className="display" style={{color: 'var(--critical)', margin: 0}}>EVACUATION BROADCAST</h2>
-              <button 
-                onClick={() => setShowEvacModal(false)}
-                style={{background:'transparent', border:'none', color:'white', cursor:'pointer', fontSize:'1.2rem'}}
-              >✕</button>
+          <div style={s.feedContent}>
+            {!hasAlerts ? (
+              <div style={s.emptyState}>
+                <div style={s.radarContainer}>
+                  <div style={{...s.radarRing, width: '120px', height: '120px', border: '1px solid var(--border-dim)'}} />
+                  <div style={{...s.radarRing, width: '80px', height: '80px', border: '1px solid var(--border-void)'}} />
+                  <div style={{...s.radarRing, width: '40px', height: '40px', border: '1px solid var(--border-void)'}} />
+                  <div className="radar-sweep" style={s.radarSweep} />
+                  <div className="radar-ping" style={s.radarPing} />
+                </div>
+                <div className="font-mono" style={{ fontSize: '10px', color: 'var(--text-muted)', marginTop: '20px' }}>Monitoring · No active incidents</div>
+                <div className="font-mono" style={{ fontSize: '8px', color: 'var(--text-muted)', opacity: 0.5, marginTop: '4px' }}>System is live and scanning</div>
+              </div>
+            ) : (
+              activeAlerts.map(alert => <AlertCard key={alert.id} alert={alert} staffName={user?.name} onResolve={fetchAlerts} />)
+            )}
+          </div>
+        </div>
+
+        {/* RIGHT COLUMN: INTELLIGENCE */}
+        <div style={s.rightCol}>
+          {/* Headcount Panel built directly here to control animations */}
+          <div style={s.panelCard}>
+            <div className="font-mono" style={{ fontSize: '8px', color: 'var(--text-muted)', letterSpacing: '2px', marginBottom: '16px' }}>GUEST HEADCOUNT</div>
+            
+            <div style={s.donutContainer}>
+              <div style={{...s.donutChart, '--safe-pct': totalGuests > 0 ? (safeCount / totalGuests) * 100 : 0}} />
+              <div style={s.donutInner}>
+                <div className="font-display" style={{ fontSize: '28px', color: 'var(--green)', lineHeight: 1 }}>{safeCount}</div>
+                <div className="font-mono" style={{ fontSize: '12px', color: 'var(--text-muted)' }}>/ {totalGuests}</div>
+              </div>
+            </div>
+
+            <div style={s.statRow}>
+              <span className="font-mono" style={{ fontSize: '9px', color: 'var(--text-muted)', letterSpacing: '1px' }}>SAFE</span>
+              <span className="font-mono" style={{ fontSize: '16px', fontWeight: 500, color: 'var(--green)' }}>{safeCount}</span>
+            </div>
+            <div style={s.statRow}>
+              <span className="font-mono" style={{ fontSize: '9px', color: 'var(--text-muted)', letterSpacing: '1px' }}>IN DANGER</span>
+              <span className="font-mono" style={{ fontSize: '16px', fontWeight: 500, color: 'var(--red)' }}>{inDangerCount}</span>
+            </div>
+            <div style={s.statRow}>
+              <span className="font-mono" style={{ fontSize: '9px', color: 'var(--text-muted)', letterSpacing: '1px' }}>UNACCOUNTED</span>
+              <span className="font-mono" style={{ fontSize: '16px', fontWeight: 500, color: 'var(--amber)' }}>{unaccountedCount}</span>
             </div>
             
-            <p className="mono" style={{fontSize: '0.7rem', color: 'var(--text-muted)', marginBottom: '20px'}}>
-              Describe the incident to generate AI-assisted safe routing, or write instructions manually.
-            </p>
+            <div style={{ marginTop: '12px', display: 'flex', flexDirection: 'column', gap: '6px', maxHeight: '120px', overflowY: 'auto' }}>
+              {/* Real safe guests list */}
+              {safeGuests.slice(-5).reverse().map((g, i) => (
+                <div key={i} style={{ display: 'flex', alignItems: 'center', gap: '8px', padding: '6px 0', animation: 'slideInRight 0.4s ease' }}>
+                  <div style={{ width: '6px', height: '6px', borderRadius: '50%', background: 'var(--green)' }} />
+                  <span className="font-mono" style={{ fontSize: '9px', color: 'var(--text-secondary)', flex: 1 }}>{g.guestId}</span>
+                  <span className="font-mono" style={{ fontSize: '8px', color: 'var(--text-muted)' }}>{g.location || 'Unknown'}</span>
+                </div>
+              ))}
+            </div>
+          </div>
 
-            <div style={{marginBottom: '16px'}}>
-              <label className="mono" style={styles.label}>INCIDENT LOCATION/DETAILS</label>
-              <input 
-                type="text" 
-                value={incidentDetails}
-                onChange={(e) => setIncidentDetails(e.target.value)}
-                placeholder="e.g. Fire detected in West Wing Kitchen"
-                style={styles.input}
-              />
+          {/* Risk Prediction Panel */}
+          <div style={s.panelCard}>
+            <div className="font-mono" style={{ fontSize: '8px', color: 'var(--text-muted)', letterSpacing: '2px', marginBottom: '14px' }}>RISK INTELLIGENCE</div>
+            
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+              <span className="font-mono" style={{ fontSize: '10px', color: 'var(--text-muted)' }}>BUILDING RISK SCORE</span>
+              <span className="font-mono" style={{ fontSize: '18px', fontWeight: 500, color: isElevated ? 'var(--amber)' : 'var(--green)', transition: 'color 600ms' }}>
+                {riskScore}
+              </span>
             </div>
 
-            <button 
-              onClick={handleGenerateAI} 
-              style={styles.aiBtn} 
-              disabled={drafting || !incidentDetails}
-              className="mono"
-            >
-              {drafting ? "ANALYZING MAP..." : "⚡ GENERATE A.I. ROUTE"}
-            </button>
-
-            <div style={{marginBottom: '20px', marginTop: '16px'}}>
-              <label className="mono" style={styles.label}>BROADCAST MESSAGE (EDITABLE)</label>
-              <textarea 
-                value={aiDraft}
-                onChange={(e) => setAiDraft(e.target.value)}
-                placeholder="Type or generate instructions here. These will be blasted to ALL guests."
-                style={styles.textarea}
-                rows={4}
-              />
+            <div style={{ height: '8px', background: 'var(--bg-surface)', borderRadius: '4px', margin: '8px 0', position: 'relative' }}>
+              <div style={{ height: '100%', borderRadius: '4px', background: isElevated ? 'var(--amber)' : 'var(--green)', width: `${riskScore}%`, transition: 'all 600ms ease-out', boxShadow: `0 0 8px ${isElevated ? 'var(--amber-glow)' : 'var(--green-glow)'}` }} />
             </div>
 
-            <button 
-              onClick={handleBroadcast} 
-              style={styles.broadcastBtn}
-              className="display"
-              disabled={!aiDraft}
-            >
-              BROADCAST TO ALL GUESTS
-            </button>
-          </div>
-        </div>
-      )}
+            <div style={{ background: isElevated ? 'var(--amber-dim)' : 'var(--green-dim)', border: `1px solid ${isElevated ? 'var(--amber)' : 'var(--green)'}`, borderRadius: '20px', padding: '3px 10px', display: 'inline-block', marginTop: '4px' }}>
+              <span className="font-mono" style={{ fontSize: '9px', color: isElevated ? 'var(--amber)' : 'var(--green)' }}>{isElevated ? 'ELEVATED' : 'LOW RISK'}</span>
+            </div>
 
-      {/* DEAD MAN'S SWITCH FLOATING UI */}
-      {activeDispatchId && (
-        <div style={styles.deadManPanel}>
-          <div style={styles.deadManHeader} className="mono">DEAD MAN'S SWITCH</div>
-          <div style={styles.deadManSub} className="mono">YOU ARE DISPATCHED TO A THREAT ZONE</div>
-          <div style={{...styles.deadManTimer, color: timeLeft <= 15 ? 'var(--critical)' : 'white'}} className="display">
-            {timeLeft}s
+            {isElevated && (
+              <div style={{ marginTop: '16px', display: 'flex', flexDirection: 'column', gap: '4px' }}>
+                {realActiveAlertsCount > 0 && <div className="font-mono slide-in-delay-1" style={{ fontSize: '8px', color: 'var(--text-muted)', padding: '4px 0' }}>▸ Active incident detected · +{25 * realActiveAlertsCount}pts</div>}
+                {unaccountedCount > 0 && <div className="font-mono slide-in-delay-2" style={{ fontSize: '8px', color: 'var(--text-muted)', padding: '4px 0' }}>▸ Unaccounted guests in sector · +{Math.min(8 * unaccountedCount, 40)}pts</div>}
+              </div>
+            )}
           </div>
-          <button style={styles.deadManBtn} onClick={handlePingAlive} className="display">
-            I AM OKAY
-          </button>
-          <div style={{fontSize: '0.65rem', color: 'var(--text-muted)', marginTop: '8px', textAlign: 'center'}} className="mono">FAILING TO RESPOND ESCALATES STATUS TO UNRESPONSIVE</div>
-        </div>
-      )}
 
+        </div>
+      </div>
+    </div>
+  );
+
+  async function simulateAlert(type, message) {
+    if(!user) return;
+    await fetch(`${API}/api/alerts/report`, { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({ emergencyType: type, rawMessage: message, location: 'Room 405', guestId: 'G-SIM', hotelId: user.hotelId }) });
+  }
+}
+
+function StaffMember({ initials, name, role, status }) {
+  return (
+    <div style={{ display: 'flex', alignItems: 'center', gap: '8px', padding: '8px 0' }}>
+      <div style={{ width: '28px', height: '28px', borderRadius: '50%', background: 'var(--bg-elevated)', border: '1px solid var(--border-mid)', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+        <span className="font-mono" style={{ fontSize: '10px', color: 'var(--text-secondary)' }}>{initials}</span>
+      </div>
+      <div style={{ flex: 1, display: 'flex', flexDirection: 'column' }}>
+        <span className="font-body" style={{ fontSize: '12px', color: 'var(--text-primary)' }}>{name}</span>
+        <span className="font-mono" style={{ fontSize: '9px', color: 'var(--text-muted)' }}>{role}</span>
+      </div>
+      <div style={{ width: '6px', height: '6px', borderRadius: '50%', background: `var(--${status})` }} />
     </div>
   );
 }
 
-const styles = {
-  page: { padding: '40px', maxWidth: '1200px', margin: '0 auto', background: 'var(--bg-base)', minHeight: '100vh', color: 'var(--text-primary)' },
-  header: { display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: '40px', borderBottom: '1px solid var(--border-default)', paddingBottom: '20px' },
-  title: { fontSize: '3rem', color: 'var(--text-primary)', letterSpacing: '4px', lineHeight: 1, margin: 0 },
-  subtitle: { color: 'var(--critical)', fontSize: '0.8rem', letterSpacing: '2px', marginTop: '8px' },
-  grid: { display: 'grid', gridTemplateColumns: 'minmax(300px, 1fr) 2fr', gap: '40px', alignItems: 'flex-start' },
-  colLeft: { display: 'flex', flexDirection: 'column' },
-  colRight: { display: 'flex', flexDirection: 'column' },
-  feedHeader: { display: 'flex', justifyContent: 'space-between', color: 'var(--text-secondary)', fontSize: '0.8rem', letterSpacing: '2px', marginBottom: '16px', borderBottom: '1px solid var(--border-subtle)', paddingBottom: '8px' },
-  feed: { display: 'flex', flexDirection: 'column' },
-  emptyState: { textAlign: 'center', padding: '60px 20px', border: '1px dashed var(--border-strong)', borderRadius: 'var(--radius-lg)', color: 'var(--text-muted)' },
-  evacBtn: { background: 'rgba(255, 59, 59, 0.1)', color: 'var(--critical)', border: '1px solid var(--critical)', padding: '8px 16px', borderRadius: '4px', cursor: 'pointer', fontSize: '0.8rem', letterSpacing: '1px' },
-  iotBtn: { background: 'rgba(139, 92, 246, 0.1)', color: '#a78bfa', border: '1px solid #8b5cf6', padding: '8px 16px', borderRadius: '4px', cursor: 'pointer', fontSize: '0.8rem', letterSpacing: '1px' },
-  modalBackdrop: { position: 'fixed', top: 0, left: 0, right: 0, bottom: 0, background: 'rgba(0,0,0,0.8)', display: 'flex', justifyContent: 'center', alignItems: 'center', zIndex: 100 },
-  modal: { background: 'var(--bg-surface)', border: '1px solid var(--critical-glow)', borderRadius: '12px', padding: '30px', width: '90%', maxWidth: '500px', boxShadow: '0 0 40px rgba(255, 59, 59, 0.2)' },
-  modalHeader: { display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '10px' },
-  label: { display: 'block', fontSize: '0.7rem', color: 'white', letterSpacing: '1px', marginBottom: '8px' },
-  input: { width: '100%', background: 'var(--bg-base)', border: '1px solid var(--border-subtle)', color: 'white', padding: '12px', borderRadius: '6px', outline: 'none', boxSizing: 'border-box' },
-  textarea: { width: '100%', background: 'var(--bg-base)', border: '1px dashed var(--critical)', color: 'white', padding: '12px', borderRadius: '6px', outline: 'none', resize: 'vertical', fontFamily: 'var(--font-body)', boxSizing: 'border-box', lineHeight: 1.4 },
-  aiBtn: { width: '100%', background: 'linear-gradient(45deg, #4facfe 0%, #00f2fe 100%)', color: 'black', border: 'none', padding: '10px', borderRadius: '4px', cursor: 'pointer', fontWeight: 'bold', letterSpacing: '1px' },
-  broadcastBtn: { width: '100%', background: 'var(--critical)', color: 'white', border: 'none', padding: '16px', borderRadius: '6px', cursor: 'pointer', fontSize: '1.2rem', letterSpacing: '2px', fontWeight: 'bold' },
-  deadManPanel: { position: 'fixed', bottom: '40px', right: '40px', background: 'var(--bg-surface)', border: '2px solid var(--critical)', borderRadius: '16px', padding: '24px', width: '320px', boxShadow: '0 0 50px rgba(255,59,59,0.3)', zIndex: 1000, display: 'flex', flexDirection: 'column', alignItems: 'center' },
-  deadManHeader: { color: 'var(--critical)', fontSize: '1.2rem', fontWeight: 'bold', letterSpacing: '2px' },
-  deadManSub: { color: 'var(--text-secondary)', fontSize: '0.7rem', marginTop: '4px', textAlign: 'center' },
-  deadManTimer: { fontSize: '4rem', margin: '20px 0', lineHeight: 1 },
-  deadManBtn: { width: '100%', padding: '20px', fontSize: '1.5rem', background: 'var(--safe)', color: 'white', border: 'none', borderRadius: '8px', cursor: 'pointer', letterSpacing: '3px', transition: 'transform 0.1s' }
+function SimulateBtn({ icon, label, color, onTrigger }) {
+  return (
+    <button className="font-mono sim-btn" onClick={onTrigger} style={{ width: '100%', height: '32px', background: 'var(--bg-elevated)', border: '1px solid var(--border-dim)', borderRadius: '6px', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '6px', cursor: 'pointer', transition: 'all var(--fast)', color: 'var(--text-secondary)', '--hover-color': color, '--hover-border': color, outline: 'none' }}>
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', width: '16px', height: '16px', border: '1px solid currentColor', borderRadius: '2px', fontSize: '10px' }}>{icon}</div>
+      <span style={{ fontSize: '10px' }}>{label}</span>
+    </button>
+  );
+}
+
+function Clock() {
+  const [time, setTime] = useState(new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' }));
+  useEffect(() => {
+    const timer = setInterval(() => {
+      setTime(new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' }));
+    }, 1000);
+    return () => clearInterval(timer);
+  }, []);
+  return <span className="font-mono" style={{ fontSize: '14px', color: 'var(--text-secondary)', letterSpacing: '2px' }}>{time}</span>;
+}
+
+const s = {
+  page: { position: 'relative', zIndex: 1, height: '100vh', width: '100%', display: 'flex', flexDirection: 'column', overflow: 'hidden' },
+  navbar: { width: '100%', height: '58px', background: 'rgba(9,12,20,0.92)', backdropFilter: 'blur(20px)', borderBottom: '1px solid var(--border-void)', flexShrink: 0, display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '0 24px', zIndex: 100 },
+  navLeft: { display: 'flex', alignItems: 'center', gap: '16px' },
+  navDivider: { width: '1px', height: '24px', background: 'var(--border-dim)' },
+  navCenter: { display: 'flex', alignItems: 'center', gap: '12px' },
+  statPill: { background: 'var(--bg-elevated)', border: '1px solid var(--border-dim)', borderRadius: '20px', padding: '4px 16px', display: 'flex', alignItems: 'center', gap: '8px' },
+  navRight: { display: 'flex', alignItems: 'center', gap: '16px' },
+  mainLayout: { flex: 1, display: 'flex', width: '100%', overflow: 'hidden' },
+  leftCol: { width: '260px', height: '100%', overflowY: 'auto', borderRight: '1px solid var(--border-void)', paddingBottom: '40px' },
+  centerCol: { flex: 1, height: '100%', overflowY: 'auto', borderRight: '1px solid var(--border-void)', position: 'relative', display: 'flex', flexDirection: 'column' },
+  rightCol: { width: '300px', height: '100%', overflowY: 'auto', padding: '20px' },
+  sectionLabel: { fontSize: '8px', color: 'var(--text-muted)', letterSpacing: '2px', padding: '20px 16px 10px' },
+  buildingStatus: { padding: '0 16px', display: 'flex', flexDirection: 'column', gap: '8px' },
+  floorBar: { background: 'var(--bg-elevated)', border: '1px solid var(--border-dim)', borderRadius: '4px', height: '32px', display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '0 10px', transition: 'all 300ms' },
+  floorCurrent: { borderColor: 'var(--border-mid)' },
+  floorAlert: { background: 'var(--red-dim)', borderColor: 'var(--red)' },
+  colDivider: { width: '100%', height: '1px', background: 'var(--border-void)', margin: '16px 0' },
+  feedTopBar: { position: 'sticky', top: 0, zIndex: 10, background: 'rgba(6,8,16,0.95)', backdropFilter: 'blur(10px)', padding: '16px 24px', display: 'flex', justifyContent: 'space-between', alignItems: 'center', borderBottom: '1px solid var(--border-void)' },
+  filterTab: { background: 'transparent', border: 'none', color: 'var(--text-muted)', fontSize: '9px', cursor: 'pointer', paddingBottom: '4px', borderBottom: '2px solid transparent', transition: 'all var(--fast)' },
+  filterTabActive: { color: 'var(--text-primary)', borderBottomColor: 'var(--system)' },
+  feedContent: { padding: '24px', flex: 1, display: 'flex', flexDirection: 'column' },
+  emptyState: { flex: 1, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', minHeight: '300px' },
+  radarContainer: { position: 'relative', width: '120px', height: '120px', display: 'flex', alignItems: 'center', justifyContent: 'center' },
+  radarRing: { position: 'absolute', borderRadius: '50%' },
+  radarSweep: { position: 'absolute', left: '50%', top: '50%', width: '60px', height: '2px', background: 'linear-gradient(90deg, transparent, var(--system) 60%, rgba(99,120,255,0.6))', transformOrigin: 'left center', animation: 'rotate 4s linear infinite' },
+  radarPing: { position: 'absolute', width: '6px', height: '6px', background: 'var(--system)', borderRadius: '50%', top: '30px', right: '30px', animation: 'radar-ping 4s linear infinite', animationDelay: '1s' },
+  panelCard: { background: 'var(--bg-elevated)', border: '1px solid var(--border-dim)', borderRadius: '14px', padding: '20px', marginBottom: '12px' },
+  donutContainer: { width: '100px', height: '100px', position: 'relative', margin: '0 auto 16px' },
+  donutChart: { position: 'absolute', inset: 0, borderRadius: '50%', background: 'conic-gradient(var(--green) 0deg, var(--green) calc(var(--safe-pct) * 3.6deg), var(--border-dim) calc(var(--safe-pct) * 3.6deg), var(--border-dim) 360deg)', transition: 'background 1s ease-out' },
+  donutInner: { position: 'absolute', inset: '14px', background: 'var(--bg-elevated)', borderRadius: '50%', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', zIndex: 2 },
+  statRow: { display: 'flex', justifyContent: 'space-between', padding: '10px 0', borderBottom: '1px solid var(--border-void)' }
 };
+
+if (typeof document !== 'undefined') {
+  const style = document.createElement('style');
+  style.innerHTML = `
+    .stat-num { animation: number-pop 0.3s ease-out; }
+    .sim-btn:hover { border-color: var(--hover-border) !important; color: var(--hover-color) !important; }
+    .slide-in-delay-1 { animation: slideInRight 0.4s ease 0.1s backwards; }
+    .slide-in-delay-2 { animation: slideInRight 0.4s ease 0.2s backwards; }
+    @keyframes slideInRight { from { opacity: 0; transform: translateX(8px); } to { opacity: 1; transform: translateX(0); } }
+  `;
+  document.head.appendChild(style);
+}

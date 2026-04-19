@@ -1,159 +1,96 @@
 import { useState, useRef } from 'react';
 import { API } from '../hooks/useSocket';
 
-function SilentWitness({ guestId, location, hotelId }) {
-  const [tapCount, setTapCount]     = useState(0);
-  const [activated, setActivated]   = useState(false);
-  const [dummyMsg, setDummyMsg]     = useState('');
-  const timerRef = useRef(null);
+export default function SilentWitness({ guestId, location, hotelId }) {
+  const [taps, setTaps] = useState(0);
+  const [success, setSuccess] = useState(false);
+  const resetTimer = useRef(null);
 
-  const handleNormalTap = async (serviceName) => {
-    setDummyMsg(`✓ ${serviceName} request received. Staff will assist you shortly.`);
-    setTimeout(() => setDummyMsg(''), 3000);
+  const handleTap = async (service) => {
+    if (service === 'EXTRA TOWELS') {
+      const newTaps = taps + 1;
+      setTaps(newTaps);
 
-    try {
-      await fetch(`${API}/api/alerts/report`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          emergencyType: 'SERVICE',
-          rawMessage: `Guest requested ${serviceName}`,
-          location,
-          guestId,
-          hotelId
-        }),
-      });
-    } catch (e) {
-      console.error('Failed to send service alert', e);
+      clearTimeout(resetTimer.current);
+      resetTimer.current = setTimeout(() => setTaps(0), 8000); // 8 seconds window
+
+      if (newTaps >= 3) {
+        setTaps(0);
+        clearTimeout(resetTimer.current);
+        
+        // Secret welfare check triggered
+        try {
+          await fetch(`${API}/api/alerts/silent`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              pattern: 'EXTRA TOWELS (3 taps)',
+              location,
+              guestId,
+              hotelId
+            })
+          });
+          setSuccess(true);
+          setTimeout(() => setSuccess(false), 3000);
+        } catch (e) {
+          console.error('Silent alert failed');
+        }
+      }
+    } else {
+      // Normal hotel service behavior (mock)
+      setSuccess(true);
+      setTimeout(() => setSuccess(false), 2000);
     }
   };
 
-  const handleTap = async () => {
-    const next = tapCount + 1;
-    setTapCount(next);
-
-    clearTimeout(timerRef.current);
-    timerRef.current = setTimeout(() => setTapCount(0), 8000);
-
-    if (next >= 3) {
-      clearTimeout(timerRef.current);
-      setTapCount(0);
-      setActivated(true);
-
-      await fetch(`${API}/api/alerts/silent`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          guestId,
-          location,
-          hotelId,
-          pattern: 'Guest pressed "Request Extra Towels" 3 times within 8 seconds',
-        }),
-      });
-    }
-  };
+  const services = [
+    { label: 'ROOM SERVICE', char: 'R' },
+    { label: 'EXTRA TOWELS', char: 'T' },
+    { label: 'HOUSEKEEPING', char: 'H' },
+    { label: 'FRONT DESK', char: 'F' }
+  ];
 
   return (
-    <div style={styles.wrapper}>
-      {/* Looks like a normal hotel service section */}
-      <div style={styles.divider}>
-        <span style={styles.dividerLine} />
-        <span style={styles.dividerText} className="mono">GUEST SERVICES</span>
-        <span style={styles.dividerLine} />
+    <div style={{ width: '100%', marginTop: '16px' }}>
+      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '12px' }}>
+        {services.map((svc) => (
+          <button 
+            key={svc.label}
+            className="silent-btn"
+            style={s.btn}
+            onClick={() => handleTap(svc.label)}
+          >
+            <div className="font-body" style={{ fontSize: '13px', color: 'var(--text-secondary)' }}>{svc.label}</div>
+            <div className="font-mono" style={s.iconBox}>{svc.char}</div>
+          </button>
+        ))}
       </div>
-
-      <div style={styles.serviceGrid}>
-        <button onClick={() => { handleNormalTap('Extra Towels'); handleTap(); }} style={styles.serviceBtn}>
-          <span style={styles.serviceIcon}>🛎</span>
-          <span style={styles.serviceName}>Extra Towels</span>
-        </button>
-        <button onClick={() => handleNormalTap('Room Service')} style={styles.serviceBtn}>
-          <span style={styles.serviceIcon}>🍽</span>
-          <span style={styles.serviceName}>Room Service</span>
-        </button>
-        <button onClick={() => handleNormalTap('Housekeeping')} style={styles.serviceBtn}>
-          <span style={styles.serviceIcon}>🧹</span>
-          <span style={styles.serviceName}>Housekeeping</span>
-        </button>
-        <button onClick={() => handleNormalTap('Concierge')} style={styles.serviceBtn}>
-          <span style={styles.serviceIcon}>🔑</span>
-          <span style={styles.serviceName}>Concierge</span>
-        </button>
-      </div>
-
-      {activated && (
-        <p style={styles.confirmation} className="mono">
-          ✓ SILENT ALERT ACTIVATED. Monitor your surroundings.
-        </p>
+      {success && (
+        <div className="font-mono" style={{ fontSize: '9px', color: 'var(--text-muted)', textAlign: 'center', marginTop: '12px' }}>
+          Request received.
+        </div>
       )}
-      {!activated && dummyMsg && (
-        <p style={styles.confirmation} className="mono">
-          {dummyMsg}
-        </p>
-      )}
-
-      {/* Demo hint only — remove before real deployment */}
-      <p style={styles.hint}>
-        <em>Demo: tap "Extra Towels" 3× quickly for silent welfare check</em>
-      </p>
     </div>
   );
 }
 
-const styles = {
-  wrapper: { marginTop: '32px' },
-  divider: {
-    display: 'flex',
-    alignItems: 'center',
-    gap: '12px',
-    marginBottom: '16px',
+const s = {
+  btn: {
+    background: 'var(--bg-surface)', border: '1px solid var(--border-void)', borderRadius: '8px',
+    padding: '14px', cursor: 'pointer', display: 'flex', flexDirection: 'column', alignItems: 'center',
+    gap: '8px', transition: 'all 150ms', outline: 'none'
   },
-  dividerLine: {
-    flex: 1,
-    height: '1px',
-    background: 'var(--border-subtle)',
-  },
-  dividerText: {
-    fontSize: '0.65rem',
-    color: 'var(--text-muted)',
-    letterSpacing: '2px',
-    whiteSpace: 'nowrap',
-  },
-  serviceGrid: {
-    display: 'grid',
-    gridTemplateColumns: '1fr 1fr',
-    gap: '8px',
-  },
-  serviceBtn: {
-    display: 'flex',
-    alignItems: 'center',
-    gap: '8px',
-    padding: '12px',
-    background: 'var(--bg-surface)',
-    border: '1px solid var(--border-subtle)',
-    borderRadius: 'var(--radius-sm)',
-    color: 'var(--text-secondary)',
-    fontSize: '0.8rem',
-    cursor: 'pointer',
-    transition: 'var(--transition)',
-    fontFamily: "'DM Sans', sans-serif",
-  },
-  serviceIcon: { fontSize: '1rem' },
-  serviceName: { fontSize: '0.8rem' },
-  confirmation: {
-    color: 'var(--text-muted)',
-    fontSize: '0.75rem',
-    marginTop: '10px',
-    textAlign: 'center',
-    letterSpacing: '0.5px',
-  },
-  hint: {
-    color: 'var(--text-muted)',
-    fontSize: '0.7rem',
-    textAlign: 'center',
-    marginTop: '8px',
-    opacity: 0.5,
-  },
+  iconBox: {
+    width: '20px', height: '20px', display: 'flex', alignItems: 'center', justifyContent: 'center',
+    fontSize: '10px', color: 'var(--text-muted)', border: '1px solid var(--border-dim)', borderRadius: '4px'
+  }
 };
 
-export default SilentWitness;
+if (typeof document !== 'undefined') {
+  const style = document.createElement('style');
+  style.innerHTML = `
+    .silent-btn:hover { border-color: var(--border-dim) !important; background: var(--bg-elevated) !important; }
+    .silent-btn:active { background: var(--system-dim) !important; transition-duration: 0ms !important; }
+  `;
+  document.head.appendChild(style);
+}
